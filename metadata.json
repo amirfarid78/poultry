@@ -1,0 +1,6 @@
+{
+  "name": "Murgh Mandi - Poultry ERP, POS & Khata System",
+  "description": "Complete Pakistani Poultry Sales ERP, POS, Traditional Urdu Khata Ledger, Order Booking, Fleet Tracking, and Roznamcha Accounting.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": []
+}

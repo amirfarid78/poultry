@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Murgh Mandi - Poultry Sales ERP & Ledger",
+  "short_name": "MurghMandi",
+  "description": "Complete Pakistani Poultry Sales ERP, POS, Traditional Urdu Khata Ledger, Order Booking & Fleet Tracking.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#166534",
+  "background_color": "#f8fafc",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
