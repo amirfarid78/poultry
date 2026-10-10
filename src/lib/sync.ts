@@ -126,13 +126,18 @@ export function startSyncEngine(db: SupabaseClient): SyncEngine {
     lastError: null,
   };
 
+  // The snapshot handed to useSyncExternalStore MUST be referentially stable:
+  // a fresh object on every getStatus() call makes React think the store
+  // changed on every render -> infinite re-render loop (React error #185).
+  let snapshot: SyncStatus = { ...state };
+
   const emit = () => {
-    const snapshot = { ...state };
     listeners.forEach((fn) => fn(snapshot));
   };
 
   const setState = (patch: Partial<SyncStatus>) => {
     Object.assign(state, patch);
+    snapshot = { ...state };
     emit();
   };
 
@@ -176,7 +181,7 @@ export function startSyncEngine(db: SupabaseClient): SyncEngine {
   }
 
   const engine: SyncEngine = {
-    getStatus: () => ({ ...state }),
+    getStatus: () => snapshot,
     subscribe: (fn) => {
       listeners.add(fn);
       return () => {
