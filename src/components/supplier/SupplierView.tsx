@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Party, Purchase, LedgerEntry, UserRole } from '../../types';
 import { formatPKR } from '../../utils/calculations';
-import { Building2, Plus, ArrowRight, Printer, Share2 } from 'lucide-react';
+import { PartyModal } from '../common/PartyModal';
+import { Building2, Plus, ArrowRight, Printer, Share2, UserPlus, Edit3 } from 'lucide-react';
 
 interface SupplierViewProps {
   parties: Party[];
@@ -9,8 +10,11 @@ interface SupplierViewProps {
   ledgerEntries: LedgerEntry[];
   currentRole: UserRole;
   language: 'en' | 'ur';
+  todayMandiRate?: number;
   onAddPurchase: (purchase: Purchase) => void;
   onOpenReceiptModal: (partyId?: string) => void;
+  onAddParty?: (party: Party) => void;
+  onUpdateParty?: (party: Party) => void;
 }
 
 export const SupplierView: React.FC<SupplierViewProps> = ({
@@ -19,19 +23,25 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
   ledgerEntries,
   currentRole,
   language,
+  todayMandiRate = 12000,
   onAddPurchase,
-  onOpenReceiptModal
+  onOpenReceiptModal,
+  onAddParty,
+  onUpdateParty
 }) => {
   const isUrdu = language === 'ur';
   const suppliers = parties.filter((p) => p.partyType === 'supplier');
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>(suppliers[0]?.id || '');
 
   const [showAddPurchaseModal, setShowAddPurchaseModal] = useState(false);
-  const [purchaseRate, setPurchaseRate] = useState<number>(11800);
+  const [purchaseRate, setPurchaseRate] = useState<number>(todayMandiRate || 11800);
   const [purchaseWeight, setPurchaseWeight] = useState<number>(2000);
   const [birdCount, setBirdCount] = useState<number>(1000);
   const [paidCash, setPaidCash] = useState<number>(100000);
   const [paidBank, setPaidBank] = useState<number>(200000);
+
+  const [isAddSupplierModalOpen, setIsAddSupplierModalOpen] = useState(false);
+  const [editingSupplier, setEditingSupplier] = useState<Party | null>(null);
 
   const selectedSupplier = parties.find((p) => p.id === selectedSupplierId) || suppliers[0];
 
@@ -89,6 +99,17 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
 
         <div className="flex items-center gap-2">
           <button
+            onClick={() => {
+              setEditingSupplier(null);
+              setIsAddSupplierModalOpen(true);
+            }}
+            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white px-3 py-2 rounded-xl text-xs font-bold transition shadow-sm"
+          >
+            <UserPlus className="w-4 h-4 text-emerald-400" />
+            <span>{isUrdu ? 'نیا سپلائر درج کریں' : '+ Add Supplier'}</span>
+          </button>
+
+          <button
             onClick={() => onOpenReceiptModal(selectedSupplier?.id)}
             className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-xl text-xs font-bold transition shadow-sm"
           >
@@ -97,7 +118,7 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
 
           <button
             onClick={() => setShowAddPurchaseModal(true)}
-            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md transition"
+            className="flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md transition"
           >
             <Plus className="w-4 h-4" />
             <span>{isUrdu ? 'نئی خریداری درج کریں' : 'New Purchase'}</span>
@@ -108,9 +129,24 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
       {/* Supplier Picker */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 flex flex-wrap items-center justify-between gap-4">
         <div className="w-full sm:w-80">
-          <label className="block text-xs font-bold text-slate-700 mb-1">
-            {isUrdu ? 'سپلائر منتخب کریں:' : 'Select Supplier:'}
-          </label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-xs font-bold text-slate-700">
+              {isUrdu ? 'سپلائر منتخب کریں:' : 'Select Supplier:'}
+            </label>
+            {selectedSupplier && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingSupplier(selectedSupplier);
+                  setIsAddSupplierModalOpen(true);
+                }}
+                className="text-[11px] font-bold text-blue-700 hover:text-blue-800 flex items-center gap-1"
+              >
+                <Edit3 className="w-3 h-3" />
+                <span>{isUrdu ? 'ترمیم پروفائل' : 'Edit Profile'}</span>
+              </button>
+            )}
+          </div>
           <select
             value={selectedSupplierId}
             onChange={(e) => setSelectedSupplierId(e.target.value)}
@@ -146,6 +182,7 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
               <tr>
                 <th className="p-3 border-b">{isUrdu ? 'تاریخ' : 'Date'}</th>
                 <th className="p-3 border-b">{isUrdu ? 'تفصیل' : 'Detail'}</th>
+                <th className="p-3 border-b">{isUrdu ? 'منڈی ریٹ' : 'Mandi Rate'}</th>
                 <th className="p-3 border-b">{isUrdu ? 'رسید / بل #' : 'Ref #'}</th>
                 <th className="p-3 border-b text-right text-rose-700">{isUrdu ? 'خریداری مال (Debit)' : 'Purchase (Debit)'}</th>
                 <th className="p-3 border-b text-right text-emerald-700">{isUrdu ? 'ادائیگی رقم (Credit)' : 'Paid (Credit)'}</th>
@@ -155,7 +192,7 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
             <tbody className="divide-y divide-slate-100">
               {supplierEntries.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-6 text-center text-slate-400">
+                  <td colSpan={7} className="p-6 text-center text-slate-400">
                     {isUrdu ? 'اس سپلائر کی کوئی پرانی انٹری موجود نہیں ہے' : 'No recorded transactions yet for this supplier.'}
                   </td>
                 </tr>
@@ -164,6 +201,9 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
                   <tr key={e.id} className="hover:bg-slate-50">
                     <td className="p-3 font-mono">{e.entryDate}</td>
                     <td className="p-3 font-medium">{isUrdu ? e.detailUrdu : e.detail}</td>
+                    <td className="p-3 font-mono font-bold text-amber-900">
+                      {e.mandiRate ? `Rs ${e.mandiRate.toLocaleString()}` : '-'}
+                    </td>
                     <td className="p-3 font-mono text-slate-500">{e.folioNo || '-'}</td>
                     <td className="p-3 text-right font-mono font-bold text-rose-700">
                       {e.debit > 0 ? `Rs ${e.debit.toLocaleString()}` : '-'}
@@ -281,6 +321,26 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Add / Edit Supplier Modal */}
+      <PartyModal
+        isOpen={isAddSupplierModalOpen}
+        onClose={() => {
+          setIsAddSupplierModalOpen(false);
+          setEditingSupplier(null);
+        }}
+        initialParty={editingSupplier}
+        onSaveParty={(party) => {
+          if (editingSupplier && onUpdateParty) {
+            onUpdateParty(party);
+          } else if (onAddParty) {
+            onAddParty(party);
+            setSelectedSupplierId(party.id);
+          }
+        }}
+        defaultPartyType="supplier"
+        language={language}
+      />
     </div>
   );
 };

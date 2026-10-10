@@ -13,7 +13,8 @@ import {
   Employee, 
   DayClosing, 
   UserRole,
-  ExpenseItem 
+  ExpenseItem,
+  GeneralJournalEntry 
 } from '../types';
 import { calculateInvoice } from '../utils/calculations';
 
@@ -196,6 +197,9 @@ const INITIAL_LEDGER_ENTRIES: LedgerEntry[] = [
     runningBalance: 24400,
     refType: 'invoice',
     refId: 'inv-1001',
+    mandiRate: 12200,
+    rate: 12200,
+    weightKg: 80,
     createdAt: '2024-10-06T09:00:00Z'
   },
   {
@@ -241,6 +245,9 @@ const INITIAL_LEDGER_ENTRIES: LedgerEntry[] = [
     runningBalance: 23800,
     refType: 'invoice',
     refId: 'inv-1002',
+    mandiRate: 13000,
+    rate: 13200,
+    weightKg: 60,
     createdAt: '2024-10-07T08:30:00Z'
   },
   {
@@ -286,6 +293,52 @@ const INITIAL_LEDGER_ENTRIES: LedgerEntry[] = [
     runningBalance: -11600,
     refType: 'receipt',
     createdAt: '2024-10-06T11:00:00Z'
+  },
+  // Big Bird Supplier Entries
+  {
+    id: 'led-supp-1',
+    partyId: 'supp-1',
+    partyType: 'supplier',
+    entryDate: '2024-10-05',
+    detail: 'Carried forward opening payable',
+    detailUrdu: 'سابقہ واجب الادا رقم',
+    folioNo: 'SUP-01',
+    debit: 0,
+    credit: 200000,
+    runningBalance: 200000,
+    refType: 'opening',
+    createdAt: '2024-10-05T00:00:00Z'
+  },
+  {
+    id: 'led-supp-2',
+    partyId: 'supp-1',
+    partyType: 'supplier',
+    entryDate: '2024-10-06',
+    detail: 'Farm Purchase: 1800 kg @ Rs 11,800/40kg',
+    detailUrdu: 'فارم مال خریداری: 1800 کلو، ریٹ 11,800',
+    folioNo: 'PUR-901',
+    debit: 531000,
+    credit: 0,
+    runningBalance: 731000,
+    refType: 'purchase',
+    mandiRate: 11800,
+    rate: 11800,
+    weightKg: 1800,
+    createdAt: '2024-10-06T07:00:00Z'
+  },
+  {
+    id: 'led-supp-3',
+    partyId: 'supp-1',
+    partyType: 'supplier',
+    entryDate: '2024-10-06',
+    detail: 'Payment to Farm Supplier via Bank & Cash',
+    detailUrdu: 'فارم سپلائر کو ادائیگی بذریعہ بینک و نقد',
+    folioNo: 'REC-SP-01',
+    debit: 0,
+    credit: 421000,
+    runningBalance: 310000,
+    refType: 'receipt',
+    createdAt: '2024-10-06T15:00:00Z'
   }
 ];
 
@@ -591,6 +644,106 @@ const INITIAL_EXPENSES: ExpenseItem[] = [
   }
 ];
 
+const INITIAL_RECEIPTS: ReceiptVoucher[] = [
+  {
+    id: 'rec-101',
+    receiptNumber: 'REC-2401',
+    receiptDate: '2024-10-06',
+    partyId: 'cust-1',
+    partyType: 'customer',
+    amount: 15000,
+    paymentMode: 'cash',
+    collectedBy: 'منشی راشد (Munshi)',
+    previousBalance: 19400,
+    newBalance: 4400,
+    notes: 'دوکان پر نقد وصولی / اگرائی',
+    shareToken: 'tok-rec-1',
+    createdAt: '2024-10-06T10:00:00Z'
+  },
+  {
+    id: 'rec-102',
+    receiptNumber: 'REC-2402',
+    receiptDate: '2024-10-07',
+    partyId: 'cust-2',
+    partyType: 'customer',
+    amount: 9000,
+    paymentMode: 'cash',
+    collectedBy: 'محمد طارق (Driver)',
+    previousBalance: 15800,
+    newBalance: 6800,
+    notes: 'مارکیٹ سپلائی موقع پر اگرائی',
+    shareToken: 'tok-rec-2',
+    createdAt: '2024-10-07T08:35:00Z'
+  },
+  {
+    id: 'rec-103',
+    receiptNumber: 'REC-2403',
+    receiptDate: '2024-10-07',
+    partyId: 'cust-4',
+    partyType: 'customer',
+    amount: 12000,
+    paymentMode: 'bank_transfer',
+    bankName: 'Meezan Bank',
+    refNo: 'TXN-984421',
+    collectedBy: 'آن لائن ٹرانسفر',
+    previousBalance: 44000,
+    newBalance: 32000,
+    notes: 'میزان بینک اکاؤنٹ ٹرانسفر',
+    shareToken: 'tok-rec-3',
+    createdAt: '2024-10-07T11:20:00Z'
+  }
+];
+
+const INITIAL_GENERAL_ENTRIES: GeneralJournalEntry[] = [
+  {
+    id: 'gen-1',
+    entryNumber: 'JV-201',
+    entryDate: '2024-10-07',
+    description: 'Special prompt payment discount given to Sami Khan',
+    descriptionUrdu: 'سمی خان کو بروقت ادائیگی پر خصوصی رعایت / چھوٹ',
+    debitAccountCode: '5030',
+    debitAccountName: 'Discount Allowed (رعایت کھاتہ)',
+    creditAccountCode: '1020',
+    creditAccountName: 'Accounts Receivable (کسٹمر وصولیاں)',
+    amount: 600,
+    partyId: 'cust-1',
+    partyName: 'Sami Khan Chicken Shop',
+    refNo: 'DISC-01',
+    createdBy: 'منشی / کیشئر',
+    createdAt: '2024-10-07T09:00:00Z'
+  },
+  {
+    id: 'gen-2',
+    entryNumber: 'JV-202',
+    entryDate: '2024-10-07',
+    description: 'Cash deposit from shop safe to Meezan Bank Current Account',
+    descriptionUrdu: 'دکان گلہ سے نقد رقم میزان بینک کرنٹ اکاؤنٹ میں جمع کروائی',
+    debitAccountCode: '1011',
+    debitAccountName: 'Bank Current Account (بینک اکاؤنٹ)',
+    creditAccountCode: '1010',
+    creditAccountName: 'Cash in Hand (نقد روکڑ گلہ)',
+    amount: 50000,
+    refNo: 'DEP-8831',
+    createdBy: 'مالک / ایڈمن',
+    createdAt: '2024-10-07T12:00:00Z'
+  },
+  {
+    id: 'gen-3',
+    entryNumber: 'JV-203',
+    entryDate: '2024-10-07',
+    description: 'Transit bird mortality loss recorded for farm lot',
+    descriptionUrdu: 'گاڑی راستے میں 6 مرغ اموات (مورٹیلٹی) نقصان ریکارڈ',
+    debitAccountCode: '5020',
+    debitAccountName: 'Mortality & Weight Loss (مرغ اموات نقصان)',
+    creditAccountCode: '1030',
+    creditAccountName: 'Live Bird Inventory (مرغ اسٹاک)',
+    amount: 4200,
+    refNo: 'MORT-12',
+    createdBy: 'اسٹاک انچارج',
+    createdAt: '2024-10-07T14:30:00Z'
+  }
+];
+
 export interface AppState {
   currentRole: UserRole;
   language: 'en' | 'ur';
@@ -601,6 +754,7 @@ export interface AppState {
   ledgerEntries: LedgerEntry[];
   purchases: Purchase[];
   expenses: ExpenseItem[];
+  generalEntries: GeneralJournalEntry[];
   orders: OrderItem[];
   vehicles: Vehicle[];
   trips: Trip[];
@@ -618,6 +772,8 @@ export function loadSavedState(): AppState {
       const parsed = JSON.parse(raw);
       return {
         ...parsed,
+        receipts: parsed.receipts && parsed.receipts.length > 0 ? parsed.receipts : INITIAL_RECEIPTS,
+        generalEntries: parsed.generalEntries && parsed.generalEntries.length > 0 ? parsed.generalEntries : INITIAL_GENERAL_ENTRIES,
         expenses: parsed.expenses && parsed.expenses.length > 0 ? parsed.expenses : INITIAL_EXPENSES,
         isOffline: !navigator.onLine
       };
@@ -632,10 +788,11 @@ export function loadSavedState(): AppState {
     todayMandiRate: 12000,
     parties: INITIAL_PARTIES,
     invoices: INITIAL_INVOICES,
-    receipts: [],
+    receipts: INITIAL_RECEIPTS,
     ledgerEntries: INITIAL_LEDGER_ENTRIES,
     purchases: [],
     expenses: INITIAL_EXPENSES,
+    generalEntries: INITIAL_GENERAL_ENTRIES,
     orders: INITIAL_ORDERS,
     vehicles: INITIAL_VEHICLES,
     trips: INITIAL_TRIPS,
@@ -654,3 +811,4 @@ export function saveStateToStorage(state: AppState) {
     console.error('Storage quota exceeded or error saving:', e);
   }
 }
+

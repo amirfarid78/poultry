@@ -54,7 +54,7 @@ export const TestSuiteView: React.FC<{ language: 'en' | 'ur' }> = ({ language })
           <div>
             <h3 className="text-base font-extrabold">
               {allPassed 
-                ? (isUrdu ? 'تمام 5 ٹیسٹ کامیابی سے پاس ہو گئے!' : 'All 5 Acceptance Tests Passed (100% Verified)!')
+                ? (isUrdu ? `تمام ${testResults.length} تصدیقی ٹیسٹ کامیابی سے پاس ہو گئے!` : `All ${testResults.length} Acceptance Tests Passed (100% Verified)!`)
                 : (isUrdu ? 'کچھ ٹیسٹ فیل ہو گئے' : 'Some Tests Failed')}
             </h3>
             <p className="text-xs opacity-80">

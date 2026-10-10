@@ -19,7 +19,8 @@ import {
   TrendingUp,
   Building2,
   Edit3,
-  Fuel
+  Fuel,
+  FileSpreadsheet
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -64,6 +65,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'pos', labelEn: 'POS / Sale Entry', labelUr: 'سیل انوائس (POS)', icon: ShoppingCart },
     { id: 'expenses', labelEn: 'Expenses & Kharch', labelUr: 'روزمرہ اخراجات', icon: Fuel },
     { id: 'customer_ledger', labelEn: 'Customer Khata', labelUr: 'کسٹمر کھاتہ رجسٹر', icon: BookOpen },
+    { id: 'daily_sheet', labelEn: 'Daily Sheet & Ugrahi', labelUr: 'ڈیلی اگرائی شیٹ', icon: FileSpreadsheet },
     { id: 'receipt', labelEn: 'Receipt Voucher', labelUr: 'وصولی واؤچر', icon: Receipt },
     { id: 'supplier', labelEn: 'Suppliers', labelUr: 'سپلائرز کھاتہ', icon: Building2 },
     { id: 'orders', labelEn: 'Order Sheets', labelUr: 'آرڈر بکنگ و شیٹ', icon: ClipboardList },

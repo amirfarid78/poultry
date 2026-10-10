@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Party, LedgerEntry } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
 import { generateLedgerPDF } from '../../utils/pdfGenerator';
+import { PartyModal } from '../common/PartyModal';
 import { 
   BookOpen, 
   Table, 
@@ -9,6 +10,8 @@ import {
   Share2, 
   Calendar, 
   User, 
+  UserPlus,
+  Edit3,
   ArrowUpDown, 
   Download, 
   CreditCard,
@@ -26,13 +29,17 @@ interface CustomerLedgerViewProps {
   ledgerEntries: LedgerEntry[];
   language: 'en' | 'ur';
   onOpenReceiptModal: (partyId?: string) => void;
+  onAddParty?: (party: Party) => void;
+  onUpdateParty?: (party: Party) => void;
 }
 
 export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
   parties,
   ledgerEntries,
   language,
-  onOpenReceiptModal
+  onOpenReceiptModal,
+  onAddParty,
+  onUpdateParty
 }) => {
   const isUrdu = language === 'ur';
   const customers = parties.filter((p) => p.partyType === 'customer');
@@ -46,6 +53,8 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
   // Modals
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [copiedNotice, setCopiedNotice] = useState(false);
+  const [isAddCustomerModalOpen, setIsAddCustomerModalOpen] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState<Party | null>(null);
 
   const selectedCustomer = parties.find((p) => p.id === selectedCustomerId) || customers[0];
 
@@ -200,6 +209,18 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
             </button>
           </div>
 
+          {/* Add New Customer Button */}
+          <button
+            onClick={() => {
+              setEditingCustomer(null);
+              setIsAddCustomerModalOpen(true);
+            }}
+            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white px-3 py-2 rounded-xl text-xs font-bold transition shadow-sm"
+          >
+            <UserPlus className="w-4 h-4 text-emerald-400" />
+            <span>{isUrdu ? 'نیا گاہک درج کریں' : '+ Add Customer'}</span>
+          </button>
+
           {/* Quick Payment Button */}
           <button
             onClick={() => onOpenReceiptModal(selectedCustomer?.id)}
@@ -251,20 +272,37 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
       {/* Customer Selector & Filter Bar */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-white p-4 rounded-2xl border border-slate-200">
         <div className="md:col-span-5">
-          <label className="block text-xs font-bold text-slate-700 mb-1">
-            {isUrdu ? 'گاہک منتخب کریں:' : 'Select Customer:'}
-          </label>
-          <select
-            value={selectedCustomerId}
-            onChange={(e) => setSelectedCustomerId(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 bg-white"
-          >
-            {customers.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.urduName ? `${c.urduName} (${c.name})` : c.name} — Bal: {formatPKR(c.currentBalance, true)}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-xs font-bold text-slate-700">
+              {isUrdu ? 'گاہک منتخب کریں:' : 'Select Customer:'}
+            </label>
+            {selectedCustomer && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingCustomer(selectedCustomer);
+                  setIsAddCustomerModalOpen(true);
+                }}
+                className="text-[11px] font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1"
+              >
+                <Edit3 className="w-3 h-3" />
+                <span>{isUrdu ? 'تفصیلات ترمیم کریں' : 'Edit Profile'}</span>
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <select
+              value={selectedCustomerId}
+              onChange={(e) => setSelectedCustomerId(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 bg-white"
+            >
+              {customers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.urduName ? `${c.urduName} (${c.name})` : c.name} — Bal: {formatPKR(c.currentBalance, true)}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="md:col-span-3">
@@ -375,10 +413,11 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                 <tr className="bg-amber-900/10 text-amber-950 border-b-2 border-amber-950/80 text-center font-bold">
                   <th className="p-3 border-l-2 border-amber-950/60 w-28">تاریخ (Date)</th>
                   <th className="p-3 border-l-2 border-amber-950/60 text-right">تفصیل (بشمول کلو گرام)</th>
-                  <th className="p-3 border-l-2 border-amber-950/60 w-24">صفحہ (Folio)</th>
-                  <th className="p-3 border-l-2 border-amber-950/60 w-32 bg-rose-50 text-rose-950">نام (Debit)</th>
-                  <th className="p-3 border-l-2 border-amber-950/60 w-32 bg-emerald-50 text-emerald-950">جمع (Credit)</th>
-                  <th className="p-3 w-36 bg-amber-50 text-amber-950">بقایا (Balance)</th>
+                  <th className="p-3 border-l-2 border-amber-950/60 w-28 bg-amber-50/50">منڈی ریٹ (Mandi Rate)</th>
+                  <th className="p-3 border-l-2 border-amber-950/60 w-20">صفحہ (Folio)</th>
+                  <th className="p-3 border-l-2 border-amber-950/60 w-28 bg-rose-50 text-rose-950">نام (Debit)</th>
+                  <th className="p-3 border-l-2 border-amber-950/60 w-28 bg-emerald-50 text-emerald-950">جمع (Credit)</th>
+                  <th className="p-3 w-32 bg-amber-50 text-amber-950">بقایا (Balance)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-amber-900/20">
@@ -391,6 +430,9 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                       </td>
                       <td className="p-3 border-l border-amber-950/30 text-right font-medium">
                         {entry.detailUrdu || entry.detail}
+                      </td>
+                      <td className="p-3 border-l border-amber-950/30 text-center font-mono text-xs font-bold text-amber-900 bg-amber-50/30">
+                        {entry.mandiRate ? `Rs ${entry.mandiRate.toLocaleString()}` : '-'}
                       </td>
                       <td className="p-3 border-l border-amber-950/30 text-center font-mono text-xs text-amber-900 font-bold">
                         {entry.folioNo || `P-${idx + 1}`}
@@ -412,7 +454,7 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
               </tbody>
               <tfoot>
                 <tr className="bg-amber-900/20 font-bold border-t-2 border-amber-950 text-amber-950">
-                  <td colSpan={3} className="p-3 border-l-2 border-amber-950/60 text-center">
+                  <td colSpan={4} className="p-3 border-l-2 border-amber-950/60 text-center">
                     میزان کل (Grand Totals):
                   </td>
                   <td className="p-3 border-l-2 border-amber-950/60 text-center font-mono text-rose-900 font-extrabold">
@@ -447,6 +489,7 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                 <tr>
                   <th className="p-3 border-b">{isUrdu ? 'تاریخ' : 'Date'}</th>
                   <th className="p-3 border-b">{isUrdu ? 'تفصیل و کلو' : 'Description'}</th>
+                  <th className="p-3 border-b">{isUrdu ? 'منڈی ریٹ' : 'Mandi Rate'}</th>
                   <th className="p-3 border-b">{isUrdu ? 'ریفرنس' : 'Ref #'}</th>
                   <th className="p-3 border-b text-right text-rose-700">{isUrdu ? 'نام (Debit / مال)' : 'Debit (Sale)'}</th>
                   <th className="p-3 border-b text-right text-emerald-700">{isUrdu ? 'جمع (Credit / وصولی)' : 'Credit (Paid)'}</th>
@@ -458,6 +501,9 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                   <tr key={e.id} className="hover:bg-slate-50 transition">
                     <td className="p-3 font-mono">{e.entryDate}</td>
                     <td className="p-3 font-medium text-slate-800">{isUrdu ? e.detailUrdu : e.detail}</td>
+                    <td className="p-3 font-mono font-bold text-amber-900">
+                      {e.mandiRate ? `Rs ${e.mandiRate.toLocaleString()}` : '-'}
+                    </td>
                     <td className="p-3 font-mono text-slate-500">{e.folioNo || '-'}</td>
                     <td className="p-3 text-right font-mono font-bold text-rose-700">
                       {e.debit > 0 ? `Rs ${e.debit.toLocaleString()}` : '-'}
@@ -664,6 +710,26 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Add / Edit Customer Modal */}
+      <PartyModal
+        isOpen={isAddCustomerModalOpen}
+        onClose={() => {
+          setIsAddCustomerModalOpen(false);
+          setEditingCustomer(null);
+        }}
+        initialParty={editingCustomer}
+        onSaveParty={(party) => {
+          if (editingCustomer && onUpdateParty) {
+            onUpdateParty(party);
+          } else if (onAddParty) {
+            onAddParty(party);
+            setSelectedCustomerId(party.id);
+          }
+        }}
+        defaultPartyType="customer"
+        language={language}
+      />
     </div>
   );
 };

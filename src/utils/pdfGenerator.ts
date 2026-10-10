@@ -205,14 +205,15 @@ export function generateLedgerPDF(
   doc.setDrawColor(203, 213, 225);
   doc.line(14, y + 8, pageWidth - 14, y + 8);
 
-  doc.setFontSize(8.5);
+  doc.setFontSize(8);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(30, 41, 59);
   doc.text('Date', 18, y + 5);
-  doc.text('Description', 45, y + 5);
-  doc.text('Ref #', 110, y + 5);
-  doc.text('Debit (Naam)', 140, y + 5, { align: 'right' });
-  doc.text('Credit (Jama)', 165, y + 5, { align: 'right' });
+  doc.text('Description', 42, y + 5);
+  doc.text('Mandi Rate', 95, y + 5);
+  doc.text('Ref #', 120, y + 5);
+  doc.text('Debit (Naam)', 146, y + 5, { align: 'right' });
+  doc.text('Credit (Jama)', 168, y + 5, { align: 'right' });
   doc.text('Balance (PKR)', pageWidth - 18, y + 5, { align: 'right' });
 
   y += 13;
@@ -220,7 +221,7 @@ export function generateLedgerPDF(
   let totCredit = 0;
 
   // Entries
-  doc.setFontSize(8);
+  doc.setFontSize(7.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
 
@@ -234,10 +235,11 @@ export function generateLedgerPDF(
     }
 
     doc.text(e.entryDate, 18, y);
-    doc.text(e.detail.substring(0, 36), 45, y);
-    doc.text(e.folioNo || '-', 110, y);
-    doc.text(e.debit > 0 ? e.debit.toLocaleString() : '-', 140, y, { align: 'right' });
-    doc.text(e.credit > 0 ? e.credit.toLocaleString() : '-', 165, y, { align: 'right' });
+    doc.text(e.detail.substring(0, 30), 42, y);
+    doc.text(e.mandiRate ? `Rs ${e.mandiRate.toLocaleString()}` : '-', 95, y);
+    doc.text(e.folioNo || '-', 120, y);
+    doc.text(e.debit > 0 ? e.debit.toLocaleString() : '-', 146, y, { align: 'right' });
+    doc.text(e.credit > 0 ? e.credit.toLocaleString() : '-', 168, y, { align: 'right' });
     
     const isAdv = e.runningBalance < 0;
     const bStr = isAdv ? `-${Math.abs(e.runningBalance).toLocaleString()} Adv` : e.runningBalance.toLocaleString();
@@ -253,10 +255,10 @@ export function generateLedgerPDF(
   doc.setFillColor(241, 245, 249);
   doc.rect(14, y, pageWidth - 28, 8, 'F');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.5);
-  doc.text('Total Summary:', 45, y + 5);
-  doc.text(`Rs ${totDebit.toLocaleString()}`, 140, y + 5, { align: 'right' });
-  doc.text(`Rs ${totCredit.toLocaleString()}`, 165, y + 5, { align: 'right' });
+  doc.setFontSize(8);
+  doc.text('Total Summary:', 42, y + 5);
+  doc.text(`Rs ${totDebit.toLocaleString()}`, 146, y + 5, { align: 'right' });
+  doc.text(`Rs ${totCredit.toLocaleString()}`, 168, y + 5, { align: 'right' });
   doc.text(curBalStr, pageWidth - 18, y + 5, { align: 'right' });
 
   return doc;

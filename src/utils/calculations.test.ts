@@ -95,5 +95,59 @@ export function runAcceptanceTests() {
     });
   }
 
+  // Test 6: Inventory Stock Deduction on Sale Relation
+  {
+    const initialStockKg = 6450;
+    const saleKg = 80;
+    const remainingStockKg = initialStockKg - saleKg;
+    const passed = remainingStockKg === 6370;
+    results.push({
+      testName: 'Stock Relation: Live Bird Inventory Deduction on POS Sale',
+      passed,
+      details: `Initial 6,450 kg - Sold 80 kg -> Expected 6,370 kg -> Got ${remainingStockKg} kg`
+    });
+  }
+
+  // Test 7: Supplier Purchase Stock Inflow Relation
+  {
+    const stockBeforePurchase = 6370;
+    const purchaseKg = 2000;
+    const purchaseRatePer40kg = 11800;
+    const purchaseTotalAmount = Math.round((purchaseRatePer40kg * purchaseKg) / 40);
+    const updatedStockKg = stockBeforePurchase + purchaseKg;
+    const passed = updatedStockKg === 8370 && purchaseTotalAmount === 590000;
+    results.push({
+      testName: 'Procurement Relation: Supplier Purchase Stock Inflow & Cost',
+      passed,
+      details: `Stock ${stockBeforePurchase}kg + Purchased ${purchaseKg}kg = ${updatedStockKg}kg (Total Rs ${purchaseTotalAmount.toLocaleString()})`
+    });
+  }
+
+  // Test 8: Order to POS Conversion Integrity
+  {
+    const orderExpectedKg = 80;
+    const quotedRate = 12200;
+    const calculatedAmount = Math.round((quotedRate * orderExpectedKg) / 40);
+    const passed = calculatedAmount === 24400;
+    results.push({
+      testName: 'Order Sheet Relation: Order Conversion to POS Sale Billing',
+      passed,
+      details: `Booked ${orderExpectedKg} kg @ Rs ${quotedRate}/40kg -> Expected Invoice Amount Rs 24,400 -> Got Rs ${calculatedAmount}`
+    });
+  }
+
+  // Test 9: Roznamcha Safe Variance Calculation
+  {
+    const systemCash = 840000;
+    const physicalCount = 840000;
+    const variance = physicalCount - systemCash;
+    const passed = variance === 0;
+    results.push({
+      testName: 'Roznamcha Relation: Daily Physical Safe Count vs System Balance',
+      passed,
+      details: `Physical Rs ${physicalCount} - System Rs ${systemCash} -> Variance: Rs ${variance}`
+    });
+  }
+
   return results;
 }

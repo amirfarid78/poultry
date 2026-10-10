@@ -53,8 +53,11 @@ export interface LedgerEntry {
   debit: number; // Naam (Customer owes us)
   credit: number; // Jama (Customer paid us)
   runningBalance: number;
-  refType: 'invoice' | 'invoice_payment' | 'receipt' | 'purchase' | 'adjustment' | 'opening';
+  refType: 'invoice' | 'invoice_payment' | 'receipt' | 'purchase' | 'adjustment' | 'opening' | 'journal';
   refId?: string;
+  mandiRate?: number; // Mandi Rate per 40kg (منڈی ریٹ)
+  rate?: number; // Quoted sale rate or purchase rate per 40kg
+  weightKg?: number; // Net weight in kg
   createdAt: string;
 }
 
@@ -99,6 +102,7 @@ export interface ReceiptVoucher {
   bankName?: string;
   refNo?: string;
   notes?: string;
+  collectedBy?: string; // Driver, Recovery boy, or Cashier
   previousBalance: number;
   newBalance: number;
   shareToken: string;
@@ -259,4 +263,23 @@ export interface ExpenseItem {
   createdBy: string;
   createdAt: string;
 }
+
+export interface GeneralJournalEntry {
+  id: string;
+  entryNumber: string;
+  entryDate: string;
+  description: string;
+  descriptionUrdu: string;
+  debitAccountCode: string;
+  debitAccountName: string;
+  creditAccountCode: string;
+  creditAccountName: string;
+  amount: number;
+  partyId?: string;
+  partyName?: string;
+  refNo?: string;
+  createdBy: string;
+  createdAt: string;
+}
+
 

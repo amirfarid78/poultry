@@ -5,6 +5,7 @@ import {
   AppState 
 } from './services/store';
 import { 
+  Party,
   Invoice, 
   ReceiptVoucher, 
   Purchase, 
@@ -15,7 +16,8 @@ import {
   DayClosing, 
   UserRole,
   LedgerEntry,
-  ExpenseItem 
+  ExpenseItem,
+  GeneralJournalEntry 
 } from './types';
 
 // Layout & View Components
@@ -24,6 +26,7 @@ import { DashboardView } from './components/dashboard/DashboardView';
 import { POSView } from './components/pos/POSView';
 import { ExpensesView } from './components/expenses/ExpensesView';
 import { CustomerLedgerView } from './components/ledger/CustomerLedgerView';
+import { DailySheetView } from './components/daily_sheet/DailySheetView';
 import { ReceiptModal } from './components/ledger/ReceiptModal';
 import { SupplierView } from './components/supplier/SupplierView';
 import { OrdersView } from './components/orders/OrdersView';
@@ -41,6 +44,7 @@ export default function App() {
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
   const [receiptPreselectedPartyId, setReceiptPreselectedPartyId] = useState<string | undefined>();
   const [publicViewingInvoice, setPublicViewingInvoice] = useState<Invoice | null>(null);
+  const [orderToInvoice, setOrderToInvoice] = useState<OrderItem | null>(null);
 
   // Sync to local storage on changes
   useEffect(() => {
@@ -92,8 +96,53 @@ export default function App() {
     setAppState((prev) => ({ ...prev, todayMandiRate: rate }));
   };
 
-  // 1. SAVE INVOICE & AUTO-UPDATE LEDGERS ATOMICALLY
-  const handleSaveInvoice = (invoice: Invoice) => {
+  // 0. PARTY CRUD OPERATIONS (Customers & Suppliers)
+  const handleAddParty = (party: Party) => {
+    setAppState((prev) => {
+      let updatedEntries = prev.ledgerEntries;
+      if (party.openingBalance !== 0) {
+        const openingLedgerEntry: LedgerEntry = {
+          id: `led-open-${Date.now()}`,
+          partyId: party.id,
+          partyType: party.partyType,
+          entryDate: party.createdAt ? party.createdAt.split('T')[0] : new Date().toISOString().split('T')[0],
+          detail: `Opening Balance (${party.openingBalance > 0 ? 'Receivable' : 'Advance with Us'})`,
+          detailUrdu: `ابتدائی سابقہ بیلنس (${party.openingBalance > 0 ? 'واجب الوصول بقایا' : 'پیشگی جمع رقم'})`,
+          folioNo: 'OP-01',
+          debit: party.openingBalance > 0 ? party.openingBalance : 0,
+          credit: party.openingBalance < 0 ? Math.abs(party.openingBalance) : 0,
+          runningBalance: party.openingBalance,
+          refType: 'opening',
+          createdAt: new Date().toISOString()
+        };
+        updatedEntries = [...updatedEntries, openingLedgerEntry];
+      }
+
+      return {
+        ...prev,
+        parties: [...prev.parties, party],
+        ledgerEntries: updatedEntries
+      };
+    });
+  };
+
+  const handleUpdateParty = (updatedParty: Party) => {
+    setAppState((prev) => ({
+      ...prev,
+      parties: prev.parties.map((p) => (p.id === updatedParty.id ? updatedParty : p))
+    }));
+  };
+
+  const handleDeleteParty = (partyId: string) => {
+    setAppState((prev) => ({
+      ...prev,
+      parties: prev.parties.filter((p) => p.id !== partyId),
+      ledgerEntries: prev.ledgerEntries.filter((l) => l.partyId !== partyId)
+    }));
+  };
+
+  // 1. SAVE INVOICE & AUTO-UPDATE LEDGERS, INVENTORY & ORDERS ATOMICALLY
+  const handleSaveInvoice = (invoice: Invoice, linkedOrderId?: string) => {
     setAppState((prev) => {
       // 1. Update customer balance
       const updatedParties = prev.parties.map((p) => {
@@ -123,6 +172,9 @@ export default function App() {
         runningBalance: intermediateBal,
         refType: 'invoice',
         refId: invoice.id,
+        mandiRate: invoice.mandiRatePer40kg,
+        rate: invoice.saleRatePer40kg,
+        weightKg: invoice.netWeightKg,
         createdAt: new Date().toISOString()
       };
 
@@ -158,14 +210,37 @@ export default function App() {
         totalCollections: prev.dayClosing.totalCollections + totRec
       };
 
+      // 5. Deduct from Live Broiler Inventory (inv-item-1)
+      const updatedInventory = prev.inventory.map((inv) => {
+        if (inv.category === 'broiler' && (inv.id === 'inv-item-1' || inv.code === 'BR-LIVE')) {
+          return {
+            ...inv,
+            currentWeightKg: Math.max(0, inv.currentWeightKg - invoice.netWeightKg),
+            currentCount: Math.max(0, (inv.currentCount || 0) - (invoice.birdCount || Math.round(invoice.netWeightKg / 2)))
+          };
+        }
+        return inv;
+      });
+
+      // 6. Update orders if linked
+      const updatedOrders = prev.orders.map((ord) => {
+        if (linkedOrderId && ord.id === linkedOrderId) {
+          return { ...ord, status: 'invoiced' as any };
+        }
+        return ord;
+      });
+
       return {
         ...prev,
         parties: updatedParties,
         invoices: [...prev.invoices, invoice],
         ledgerEntries: newLedgerEntries,
-        dayClosing: updatedDayClosing
+        dayClosing: updatedDayClosing,
+        inventory: updatedInventory,
+        orders: updatedOrders
       };
     });
+    setOrderToInvoice(null);
   };
 
   // 2. SAVE PAYMENT-ONLY RECEIPT VOUCHER
@@ -197,11 +272,15 @@ export default function App() {
         createdAt: new Date().toISOString()
       };
 
+      // If customer payment in cash, add to safe. If supplier paid in cash, deduct from safe.
+      const isCash = receipt.paymentMode === 'cash';
+      const cashDelta = receipt.partyType === 'supplier' ? -receipt.amount : receipt.amount;
+
       const updatedDayClosing: DayClosing = {
         ...prev.dayClosing,
-        systemCash: receipt.paymentMode === 'cash' ? prev.dayClosing.systemCash + receipt.amount : prev.dayClosing.systemCash,
-        physicalCash: receipt.paymentMode === 'cash' ? prev.dayClosing.physicalCash + receipt.amount : prev.dayClosing.physicalCash,
-        totalCollections: prev.dayClosing.totalCollections + receipt.amount
+        systemCash: isCash ? Math.max(0, prev.dayClosing.systemCash + cashDelta) : prev.dayClosing.systemCash,
+        physicalCash: isCash ? Math.max(0, prev.dayClosing.physicalCash + cashDelta) : prev.dayClosing.physicalCash,
+        totalCollections: receipt.partyType === 'customer' ? prev.dayClosing.totalCollections + receipt.amount : prev.dayClosing.totalCollections
       };
 
       return {
@@ -214,7 +293,7 @@ export default function App() {
     });
   };
 
-  // 3. SAVE SUPPLIER PURCHASE
+  // 3. SAVE SUPPLIER PURCHASE & UPDATE INVENTORY & CASH
   const handleAddPurchase = (purchase: Purchase) => {
     setAppState((prev) => {
       const updatedParties = prev.parties.map((p) => {
@@ -240,14 +319,38 @@ export default function App() {
         runningBalance: purchase.newBalance,
         refType: 'purchase',
         refId: purchase.id,
+        mandiRate: purchase.ratePer40kg || prev.todayMandiRate,
+        rate: purchase.ratePer40kg,
+        weightKg: purchase.netWeightKg,
         createdAt: new Date().toISOString()
+      };
+
+      // Increase Live Broiler stock
+      const updatedInventory = prev.inventory.map((inv) => {
+        if (inv.category === 'broiler' && (inv.id === 'inv-item-1' || inv.code === 'BR-LIVE')) {
+          return {
+            ...inv,
+            currentWeightKg: inv.currentWeightKg + purchase.netWeightKg,
+            currentCount: (inv.currentCount || 0) + (purchase.birdCount || Math.round(purchase.netWeightKg / 2))
+          };
+        }
+        return inv;
+      });
+
+      // Deduct paid cash from safe
+      const updatedDayClosing: DayClosing = {
+        ...prev.dayClosing,
+        physicalCash: purchase.paidCash > 0 ? Math.max(0, prev.dayClosing.physicalCash - purchase.paidCash) : prev.dayClosing.physicalCash,
+        systemCash: purchase.paidCash > 0 ? Math.max(0, prev.dayClosing.systemCash - purchase.paidCash) : prev.dayClosing.systemCash
       };
 
       return {
         ...prev,
         parties: updatedParties,
         purchases: [...prev.purchases, purchase],
-        ledgerEntries: [...prev.ledgerEntries, purchaseLedgerEntry]
+        ledgerEntries: [...prev.ledgerEntries, purchaseLedgerEntry],
+        inventory: updatedInventory,
+        dayClosing: updatedDayClosing
       };
     });
   };
@@ -307,8 +410,50 @@ export default function App() {
   };
 
   const handleConvertOrderToInvoice = (order: OrderItem) => {
+    setOrderToInvoice(order);
     setActiveTab('pos');
-    // POS will receive focus
+  };
+
+  // 4.5. HR ADVANCE & EXPENSE INTEGRATION
+  const handleIssueEmployeeAdvance = (empId: string, amount: number, notes?: string) => {
+    setAppState((prev) => {
+      const targetEmp = prev.employees.find((e) => e.id === empId);
+      const updatedEmployees = prev.employees.map((e) => {
+        if (e.id === empId) {
+          return { ...e, advanceBalance: e.advanceBalance + amount };
+        }
+        return e;
+      });
+
+      const newExpense: ExpenseItem = {
+        id: `exp-${Date.now()}`,
+        expenseNumber: `EXP-${100 + prev.expenses.length + 1}`,
+        date: new Date().toISOString().split('T')[0],
+        category: 'labor',
+        categoryName: 'Staff Advance & Payroll',
+        categoryUrduName: 'اسٹاف پیشگی لون و تنخواہ',
+        amount,
+        paymentMode: 'cash',
+        description: `Advance given to ${targetEmp?.name || 'Staff'}: ${notes || '-'}`,
+        descriptionUrdu: `${targetEmp?.urduName || targetEmp?.name || 'اسٹاف'} کو پیشگی ادائی: ${notes || '-'}`,
+        paidTo: targetEmp?.name || 'Staff',
+        createdBy: 'Cashier / منشی',
+        createdAt: new Date().toISOString()
+      };
+
+      const updatedDayClosing: DayClosing = {
+        ...prev.dayClosing,
+        physicalCash: Math.max(0, prev.dayClosing.physicalCash - amount),
+        systemCash: Math.max(0, prev.dayClosing.systemCash - amount)
+      };
+
+      return {
+        ...prev,
+        employees: updatedEmployees,
+        expenses: [newExpense, ...prev.expenses],
+        dayClosing: updatedDayClosing
+      };
+    });
   };
 
   // 5. FLEET & TRIP UPDATES
@@ -334,7 +479,131 @@ export default function App() {
     setAppState((prev) => ({ ...prev, dayClosing: closing }));
   };
 
-  // 9. SETTINGS: RESET SEED DATA
+  // 8.5. GENERAL JOURNAL ENTRY (ROZNAMCHA) HANDLERS
+  const handleAddGeneralEntry = (entry: GeneralJournalEntry) => {
+    setAppState((prev) => {
+      const updatedGeneral = [entry, ...(prev.generalEntries || [])];
+
+      let updatedParties = prev.parties;
+      let updatedLedger = prev.ledgerEntries;
+
+      if (entry.partyId) {
+        const party = prev.parties.find(p => p.id === entry.partyId);
+        if (party) {
+          const isCustomerCredit = entry.creditAccountCode === '1020';
+          const isCustomerDebit = entry.debitAccountCode === '1020';
+          const balDelta = isCustomerCredit ? -entry.amount : isCustomerDebit ? entry.amount : 0;
+          const newBal = party.currentBalance + balDelta;
+
+          updatedParties = prev.parties.map(p => p.id === entry.partyId ? { ...p, currentBalance: newBal } : p);
+
+          const journalLedgerEntry: LedgerEntry = {
+            id: `led-jv-${Date.now()}`,
+            partyId: party.id,
+            partyType: party.partyType,
+            entryDate: entry.entryDate,
+            detail: entry.description,
+            detailUrdu: entry.descriptionUrdu,
+            folioNo: entry.entryNumber,
+            debit: isCustomerDebit ? entry.amount : 0,
+            credit: isCustomerCredit ? entry.amount : 0,
+            runningBalance: newBal,
+            refType: 'journal',
+            refId: entry.id,
+            createdAt: new Date().toISOString()
+          };
+          updatedLedger = [...prev.ledgerEntries, journalLedgerEntry];
+        }
+      }
+
+      const updatedAccounts = prev.accounts.map(acc => {
+        if (acc.code === entry.debitAccountCode) {
+          return { ...acc, balance: acc.balance + entry.amount };
+        }
+        if (acc.code === entry.creditAccountCode) {
+          return { ...acc, balance: Math.max(0, acc.balance - entry.amount) };
+        }
+        return acc;
+      });
+
+      let updatedDayClosing = prev.dayClosing;
+      if (entry.debitAccountCode === '1010') {
+        updatedDayClosing = {
+          ...prev.dayClosing,
+          physicalCash: prev.dayClosing.physicalCash + entry.amount,
+          systemCash: prev.dayClosing.systemCash + entry.amount
+        };
+      } else if (entry.creditAccountCode === '1010') {
+        updatedDayClosing = {
+          ...prev.dayClosing,
+          physicalCash: Math.max(0, prev.dayClosing.physicalCash - entry.amount),
+          systemCash: Math.max(0, prev.dayClosing.systemCash - entry.amount)
+        };
+      }
+
+      return {
+        ...prev,
+        generalEntries: updatedGeneral,
+        parties: updatedParties,
+        ledgerEntries: updatedLedger,
+        accounts: updatedAccounts,
+        dayClosing: updatedDayClosing
+      };
+    });
+  };
+
+  const handleDeleteGeneralEntry = (entryId: string) => {
+    setAppState((prev) => ({
+      ...prev,
+      generalEntries: (prev.generalEntries || []).filter(g => g.id !== entryId)
+    }));
+  };
+
+  // 9. SETTINGS: 1-CLICK QUICK BUSINESS SETUP
+  const handleQuickBusinessSetup = (config: {
+    shopNameUrdu: string;
+    shopNameEn: string;
+    ownerName: string;
+    city: string;
+    openingCash: number;
+    mandiRate: number;
+    startingStockKg: number;
+  }) => {
+    setAppState((prev) => {
+      const freshClosing: DayClosing = {
+        id: `close-${new Date().toISOString().split('T')[0]}`,
+        date: new Date().toISOString().split('T')[0],
+        physicalCash: config.openingCash,
+        systemCash: config.openingCash,
+        variance: 0,
+        totalSalesKg: 0,
+        totalSalesAmount: 0,
+        totalCollections: 0,
+        isLocked: false,
+        lockedBy: 'System / سسٹم'
+      };
+
+      const freshInventory = prev.inventory.map((inv) => {
+        if (inv.category === 'broiler' && inv.id === 'inv-item-1') {
+          return {
+            ...inv,
+            currentWeightKg: config.startingStockKg,
+            currentCount: Math.round(config.startingStockKg / 2)
+          };
+        }
+        return inv;
+      });
+
+      return {
+        ...prev,
+        todayMandiRate: config.mandiRate,
+        dayClosing: freshClosing,
+        inventory: freshInventory
+      };
+    });
+  };
+
+  // 10. SETTINGS: RESET SEED DATA
   const handleResetSeedData = () => {
     localStorage.removeItem('murgh_mandi_erp_data_v1');
     setAppState(loadSavedState());
@@ -388,6 +657,9 @@ export default function App() {
             todayMandiRate={appState.todayMandiRate}
             currentRole={appState.currentRole}
             language={appState.language}
+            prefillOrder={orderToInvoice}
+            onClearPrefillOrder={() => setOrderToInvoice(null)}
+            onAddParty={handleAddParty}
             onSaveInvoice={handleSaveInvoice}
             onOpenReceiptModal={() => setIsReceiptModalOpen(true)}
             onViewPublicInvoice={(inv) => setPublicViewingInvoice(inv)}
@@ -409,6 +681,22 @@ export default function App() {
           <CustomerLedgerView
             parties={appState.parties}
             ledgerEntries={appState.ledgerEntries}
+            language={appState.language}
+            onOpenReceiptModal={(partyId) => {
+              setReceiptPreselectedPartyId(partyId);
+              setIsReceiptModalOpen(true);
+            }}
+            onAddParty={handleAddParty}
+            onUpdateParty={handleUpdateParty}
+          />
+        )}
+
+        {activeTab === 'daily_sheet' && (
+          <DailySheetView
+            parties={appState.parties}
+            receipts={appState.receipts}
+            invoices={appState.invoices}
+            currentRole={appState.currentRole}
             language={appState.language}
             onOpenReceiptModal={(partyId) => {
               setReceiptPreselectedPartyId(partyId);
@@ -441,11 +729,14 @@ export default function App() {
             ledgerEntries={appState.ledgerEntries}
             currentRole={appState.currentRole}
             language={appState.language}
+            todayMandiRate={appState.todayMandiRate}
             onAddPurchase={handleAddPurchase}
             onOpenReceiptModal={(partyId) => {
               setReceiptPreselectedPartyId(partyId);
               setIsReceiptModalOpen(true);
             }}
+            onAddParty={handleAddParty}
+            onUpdateParty={handleUpdateParty}
           />
         )}
 
@@ -487,7 +778,15 @@ export default function App() {
             dayClosing={appState.dayClosing}
             currentRole={appState.currentRole}
             language={appState.language}
+            invoices={appState.invoices}
+            receipts={appState.receipts}
+            purchases={appState.purchases}
+            expenses={appState.expenses}
+            parties={appState.parties}
+            generalEntries={appState.generalEntries}
             onUpdateDayClosing={handleUpdateDayClosing}
+            onAddGeneralEntry={handleAddGeneralEntry}
+            onDeleteGeneralEntry={handleDeleteGeneralEntry}
           />
         )}
 
@@ -497,6 +796,7 @@ export default function App() {
             currentRole={appState.currentRole}
             language={appState.language}
             onUpdateEmployees={handleUpdateEmployees}
+            onIssueAdvance={handleIssueEmployeeAdvance}
           />
         )}
 
@@ -510,6 +810,7 @@ export default function App() {
             language={appState.language}
             onResetSeedData={handleResetSeedData}
             onImportState={(newState) => setAppState(newState)}
+            onQuickSetup={handleQuickBusinessSetup}
           />
         )}
       </main>

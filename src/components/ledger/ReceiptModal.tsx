@@ -29,6 +29,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('cash');
   const [bankName, setBankName] = useState<string>('Meezan Bank');
   const [refNo, setRefNo] = useState<string>('');
+  const [collectedBy, setCollectedBy] = useState<string>('منشی راشد (Munshi)');
   const [notes, setNotes] = useState<string>('نقد وصولی برائے کھاتہ');
 
   const selectedParty = parties.find((p) => p.id === partyId) || parties[0];
@@ -57,6 +58,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       bankName: paymentMode !== 'cash' ? bankName : undefined,
       refNo,
       notes,
+      collectedBy,
       previousBalance: curBal,
       newBalance,
       shareToken: token,
@@ -192,17 +194,35 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
             </div>
           )}
 
-          {/* Notes */}
-          <div>
-            <label className="block font-semibold text-slate-700 mb-1">
-              {isUrdu ? 'تفصیل / نوٹ:' : 'Narration / Notes:'}
-            </label>
-            <input
-              type="text"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className="w-full px-3 py-1.5 rounded-xl border border-slate-300"
-            />
+          {/* Collected By (اگرائی کنندہ) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                {isUrdu ? 'وصول کنندہ / اگرائی بوائے:' : 'Collected By (Recovery Staff):'}
+              </label>
+              <select
+                value={collectedBy}
+                onChange={(e) => setCollectedBy(e.target.value)}
+                className="w-full px-3 py-1.5 rounded-xl border border-slate-300 font-bold bg-white text-xs"
+              >
+                <option value="منشی راشد (Munshi)">منشی راشد (Munshi)</option>
+                <option value="محمد طارق (Driver)">محمد طارق (Driver)</option>
+                <option value="نوید اختر (Driver)">نوید اختر (Driver)</option>
+                <option value="وقاص احمد (اگرائی بوائے)">وقاص احمد (اگرائی بوائے)</option>
+                <option value="آن لائن / بینک ٹرانسفر">آن لائن / بینک ٹرانسفر</option>
+              </select>
+            </div>
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                {isUrdu ? 'تفصیل / نوٹ:' : 'Narration / Notes:'}
+              </label>
+              <input
+                type="text"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                className="w-full px-3 py-1.5 rounded-xl border border-slate-300 text-xs"
+              />
+            </div>
           </div>
 
           {/* Preview of Balance Change */}

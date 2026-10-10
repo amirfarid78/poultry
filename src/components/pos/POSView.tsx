@@ -4,7 +4,8 @@ import {
   Invoice, 
   PaymentMode, 
   Vehicle, 
-  UserRole 
+  UserRole,
+  OrderItem 
 } from '../../types';
 import { 
   calculateInvoice, 
@@ -12,6 +13,7 @@ import {
   generateInvoiceWhatsAppUrl 
 } from '../../utils/calculations';
 import { generateInvoicePDF } from '../../utils/pdfGenerator';
+import { PartyModal } from '../common/PartyModal';
 import { 
   Plus, 
   Save, 
@@ -27,6 +29,7 @@ import {
   CreditCard, 
   Receipt,
   User,
+  UserPlus,
   Truck,
   Eye,
   FileText,
@@ -49,7 +52,10 @@ interface POSViewProps {
   todayMandiRate: number;
   currentRole: UserRole;
   language: 'en' | 'ur';
-  onSaveInvoice: (invoice: Invoice) => void;
+  prefillOrder?: OrderItem | null;
+  onClearPrefillOrder?: () => void;
+  onAddParty?: (party: Party) => void;
+  onSaveInvoice: (invoice: Invoice, linkedOrderId?: string) => void;
   onOpenReceiptModal: () => void;
   onViewPublicInvoice: (invoice: Invoice) => void;
 }
@@ -61,6 +67,9 @@ export const POSView: React.FC<POSViewProps> = ({
   todayMandiRate,
   currentRole,
   language,
+  prefillOrder,
+  onClearPrefillOrder,
+  onAddParty,
   onSaveInvoice,
   onOpenReceiptModal,
   onViewPublicInvoice
@@ -83,6 +92,19 @@ export const POSView: React.FC<POSViewProps> = ({
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>(vehicles[0]?.id || '');
   const [notes, setNotes] = useState<string>('');
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
+  const [isAddPartyModalOpen, setIsAddPartyModalOpen] = useState(false);
+
+  // Pre-fill when converting an order into invoice
+  useEffect(() => {
+    if (prefillOrder) {
+      if (prefillOrder.customerId) setSelectedCustomerId(prefillOrder.customerId);
+      if (prefillOrder.expectedKg) setWeightKg(prefillOrder.expectedKg);
+      if (prefillOrder.quotedRatePer40kg) setSaleRate(prefillOrder.quotedRatePer40kg);
+      if (prefillOrder.assignedVehicleId) setSelectedVehicleId(prefillOrder.assignedVehicleId);
+      if (prefillOrder.expectedBirdCount) setBirdCount(prefillOrder.expectedBirdCount);
+      setNotes(`Converted from Order #${prefillOrder.orderNumber} - Route: ${prefillOrder.deliveryRoute || '-'}`);
+    }
+  }, [prefillOrder]);
 
   // Voice Input & Speech Dictation State
   const [isListening, setIsListening] = useState(false);
@@ -310,7 +332,10 @@ export const POSView: React.FC<POSViewProps> = ({
     const newInvoice = createInvoiceObject();
     if (!newInvoice) return null;
 
-    onSaveInvoice(newInvoice);
+    onSaveInvoice(newInvoice, prefillOrder?.id);
+    if (onClearPrefillOrder) {
+      onClearPrefillOrder();
+    }
 
     setSaveSuccessNotice(
       isUrdu 
@@ -561,11 +586,51 @@ export const POSView: React.FC<POSViewProps> = ({
         </div>
       </div>
 
+      {/* CONVERTED ORDER NOTIFICATION BANNER */}
+      {prefillOrder && (
+        <div className="bg-emerald-50 border-2 border-emerald-400 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs text-emerald-950 shadow-sm animate-in fade-in">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
+            <div>
+              <span className="font-extrabold text-sm">
+                {isUrdu 
+                  ? `آرڈر #${prefillOrder.orderNumber} (${prefillOrder.customerUrduName || prefillOrder.customerName}) بل بنانے کے لیے منتقل ہو گیا` 
+                  : `Order #${prefillOrder.orderNumber} loaded for ${prefillOrder.customerName}`}
+              </span>
+              <p className="text-[11px] text-emerald-800 mt-0.5">
+                {isUrdu 
+                  ? `مطلوبہ وزن: ${prefillOrder.expectedKg} کلو | متوقع ریٹ: Rs ${prefillOrder.quotedRatePer40kg.toLocaleString()} | روٹ: ${prefillOrder.deliveryRoute || '-'}` 
+                  : `Expected: ${prefillOrder.expectedKg} kg @ Rs ${prefillOrder.quotedRatePer40kg.toLocaleString()}/40kg | Route: ${prefillOrder.deliveryRoute || '-'}`}
+              </p>
+            </div>
+          </div>
+          {onClearPrefillOrder && (
+            <button
+              type="button"
+              onClick={onClearPrefillOrder}
+              className="px-3 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 rounded-xl transition"
+            >
+              {isUrdu ? 'آرڈر لنک ختم کریں' : 'Unlink Order'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* QUICK CUSTOMER SELECTION CHIPS BAR */}
       <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
         <div className="text-[11px] font-bold text-slate-500 uppercase mb-2 flex items-center justify-between">
           <span>{isUrdu ? 'فوری گاہک انتخاب (ایک کلک):' : 'Fast 1-Click Customer Selection:'}</span>
-          <span className="text-slate-400 font-normal">{customers.length} {isUrdu ? 'گاہک موجود ہیں' : 'customers'}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400 font-normal">{customers.length} {isUrdu ? 'گاہک موجود ہیں' : 'customers'}</span>
+            <button
+              type="button"
+              onClick={() => setIsAddPartyModalOpen(true)}
+              className="flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-lg border border-emerald-200 transition"
+            >
+              <UserPlus className="w-3 h-3" />
+              <span>{isUrdu ? 'نیا گاہک +' : '+ New Customer'}</span>
+            </button>
+          </div>
         </div>
         <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
           {customers.map((c) => {
@@ -640,18 +705,28 @@ export const POSView: React.FC<POSViewProps> = ({
                   </span>
                 )}
               </label>
-              <select
-                ref={inputRefs.customer}
-                value={selectedCustomerId}
-                onChange={(e) => handleCustomerChange(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 bg-white"
-              >
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.urduName ? `${c.urduName} (${c.name})` : c.name} — Bal: {formatPKR(c.currentBalance, true)}
-                  </option>
-                ))}
-              </select>
+              <div className="flex items-center gap-1.5">
+                <select
+                  ref={inputRefs.customer}
+                  value={selectedCustomerId}
+                  onChange={(e) => handleCustomerChange(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 bg-white"
+                >
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.urduName ? `${c.urduName} (${c.name})` : c.name} — Bal: {formatPKR(c.currentBalance, true)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setIsAddPartyModalOpen(true)}
+                  title={isUrdu ? 'نیا گاہک درج کریں' : 'Add New Customer'}
+                  className="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 transition shadow-sm"
+                >
+                  <UserPlus className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1478,6 +1553,29 @@ export const POSView: React.FC<POSViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Quick Add Customer Modal */}
+      <PartyModal
+        isOpen={isAddPartyModalOpen}
+        onClose={() => setIsAddPartyModalOpen(false)}
+        onSaveParty={(newParty) => {
+          if (onAddParty) {
+            onAddParty(newParty);
+          }
+          setSelectedCustomerId(newParty.id);
+          if (newParty.defaultKilo) {
+            setWeightKg(newParty.defaultKilo);
+          }
+          setSaveSuccessNotice(
+            isUrdu 
+              ? `نیا گاہک "${newParty.urduName || newParty.name}" کامیابی سے شامل ہو گیا!` 
+              : `Customer "${newParty.name}" added successfully!`
+          );
+          setTimeout(() => setSaveSuccessNotice(null), 4000);
+        }}
+        defaultPartyType="customer"
+        language={language}
+      />
     </div>
   );
 };
