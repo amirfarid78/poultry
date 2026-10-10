@@ -64,24 +64,37 @@ The system adheres strictly to the formulas extracted from the reference images:
 ## 3. Step-by-Step Deployment Instructions
 
 ### A. Supabase Database Setup
-1. Create a new project at [supabase.com](https://supabase.com).
-2. Go to the **SQL Editor** in your Supabase dashboard.
-3. Open `/supabase/migrations/20240101000000_initial_poultry_schema.sql` and execute it.
-4. Open `/supabase/seed.sql` and execute it to load demo data (Sami Khan, Haji Aslam, etc.).
-5. Copy your **Project URL** and **Anon API Key** from `Project Settings > API`.
+1. Create a new project at [supabase.com](https://supabase.com) (or use the existing one).
+2. Go to the **SQL Editor** in your Supabase dashboard and run, **in order**:
+   1. `/supabase/migrations/20240101000000_initial_poultry_schema.sql` — 21 tables, ledger triggers, RLS.
+   2. `/supabase/migrations/20261010000001_role_based_rls.sql` — auth bootstrap trigger, per-role RLS policies, `expenses` table, grants.
+   3. `/supabase/migrations/20261010000002_purchase_ledger_trigger.sql` — server-side purchase ledger posting.
+3. Do **NOT** run `/supabase/seed.sql` on the live database — it is demo data for local UI development only.
+4. Copy your **Project URL** and **Publishable (anon) API Key** from `Project Settings → API`.
 
-### B. Environment Configuration
-Create a `.env` file in the root directory:
+### B. First Login & Roles
+1. Open the deployed app and **Sign up** with your email. The **first account becomes the Owner** automatically (DB trigger); later signups default to Cashier until the owner assigns their real role.
+2. Owners manage staff roles from user profiles. Roles: owner, manager, accountant, cashier, order_booker, driver, stock_keeper, auditor — see [docs/ROLE_MATRIX.md](docs/ROLE_MATRIX.md).
+3. Row-level security is enforced in Postgres; the UI additionally hides views a role cannot use.
+
+### C. Environment Configuration
+Local dev — create a `.env` file in the root (gitignored; see `.env.example`):
 ```bash
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key-here
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-publishable-or-anon-key
 ```
 
-### C. Deploy to Vercel
-1. Install the Vercel CLI or import your GitHub repository at [vercel.com](https://vercel.com).
-2. The included `vercel.json` automatically configures SPA routing.
-3. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` to Environment Variables.
-4. Build command: `npm run build` | Output directory: `dist`.
+> Never put the `service_role` key, the Postgres connection string, or the DB
+> password in the frontend or in git. Those are only for running migrations.
+
+### D. Deploy to Vercel
+1. Import your GitHub repository at [vercel.com](https://vercel.com) (or `vercel --prod` from this folder).
+2. The included `vercel.json` already handles SPA rewrites.
+3. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` under **Settings → Environment Variables**.
+4. Build command: `npm run build` (or `bun run build`) | Output directory: `dist`.
+
+### E. Offline Mode
+The app is an offline-capable PWA: writes are applied instantly to the local UI and queued in an IndexedDB outbox, then replayed to Supabase when connectivity returns (navbar badge shows pending count). Server-side ledger triggers are authoritative — after each sync the app re-fetches and reconciles, so balances always converge to the server truth. See [docs/DATA_SYNC.md](docs/DATA_SYNC.md).
 
 ---
 
