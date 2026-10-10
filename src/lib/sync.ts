@@ -67,8 +67,25 @@ async function replayOne(db: SupabaseClient, entry: OutboxEntry): Promise<void> 
   // journal_entries needs account-code resolution + line inserts; a
   // duplicate-key failure means "already synced" -> drop the entry.
   if (table === 'journal_entries') {
+    if (entry.op === 'delete') {
+      const id = (entry.payload as { id?: string }).id;
+      if (!id) return;
+      // Delete lines first (FK), then the entry itself.
+      const { error: lineErr } = await db
+        .from('journal_lines')
+        .delete()
+        .eq('journal_entry_id', id);
+      if (lineErr) throw lineErr;
+      const { error } = await db.from('journal_entries').delete().eq('id', id);
+      if (error) throw error;
+      return;
+    }
+    // Accept both { entry } (App + import path) and the raw entry (defensive).
+    const je =
+      (entry.payload as { entry?: GeneralJournalEntry }).entry ??
+      (entry.payload as unknown as GeneralJournalEntry);
     try {
-      await insertJournalEntry(db, entry.payload.entry as GeneralJournalEntry);
+      await insertJournalEntry(db, je);
     } catch (e) {
       if (isDuplicateKey(e)) return;
       throw e;
