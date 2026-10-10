@@ -50,6 +50,7 @@ export const FleetView: React.FC<FleetViewProps> = ({
   // Initialize or update Leaflet Map
   useEffect(() => {
     if (!mapContainerRef.current) return;
+    if (!activeTrip) return;
 
     const lat = activeTrip ? activeTrip.currentLat : 31.5204;
     const lng = activeTrip ? activeTrip.currentLng : 74.3587;
@@ -71,9 +72,11 @@ export const FleetView: React.FC<FleetViewProps> = ({
       });
 
       const marker = L.marker([lat, lng], { icon: truckIcon }).addTo(map);
-      marker.bindPopup(`<b>${activeTrip.plateNumber}</b><br/>Driver: ${activeTrip.driverName}<br/>Trip: ${activeTrip.tripNumber}`);
+      if (activeTrip) {
+        marker.bindPopup(`<b>${activeTrip.plateNumber}</b><br/>Driver: ${activeTrip.driverName}<br/>Trip: ${activeTrip.tripNumber}`);
+      }
 
-      const polyline = L.polyline(activeTrip.path, { color: '#059669', weight: 4, opacity: 0.8 }).addTo(map);
+      const polyline = L.polyline(activeTrip?.path ?? [], { color: '#059669', weight: 4, opacity: 0.8 }).addTo(map);
 
       // Stop pins
       activeTrip.stops.forEach((stop, idx) => {
@@ -238,6 +241,8 @@ export const FleetView: React.FC<FleetViewProps> = ({
       )}
 
       {/* Grid: Live Map Left (7 cols), Driver Mobile Console Right (5 cols) */}
+      {activeTrip ? (
+      <>
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Leaflet Map Card (Cols 7) */}
         <div className="lg:col-span-7 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
@@ -245,7 +250,7 @@ export const FleetView: React.FC<FleetViewProps> = ({
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
               <span className="text-xs font-bold text-slate-800">
-                {activeTrip.plateNumber} ({activeTrip.driverName})
+                {activeTrip ? `${activeTrip.plateNumber} (${activeTrip.driverName})` : isUrdu ? 'کوئی ٹرپ نہیں' : 'No trips yet'}
               </span>
               <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full uppercase">
                 {activeTrip.status}
@@ -302,7 +307,7 @@ export const FleetView: React.FC<FleetViewProps> = ({
                   <h3 className="text-sm font-bold text-white">
                     {isUrdu ? 'ڈرائیور موبائل پینل' : 'Driver Mobile Console (PWA)'}
                   </h3>
-                  <p className="text-[10px] text-slate-400">{activeTrip.driverName} — {activeTrip.plateNumber}</p>
+                  <p className="text-[10px] text-slate-400">{activeTrip ? `${activeTrip.driverName} — ${activeTrip.plateNumber}` : ''}</p>
                 </div>
               </div>
 
@@ -394,6 +399,19 @@ export const FleetView: React.FC<FleetViewProps> = ({
           </div>
         </div>
       </div>
+      </>) : (
+        <div className="bg-white p-10 rounded-2xl border border-slate-200 shadow-sm text-center">
+          <Truck className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+          <p className="text-sm font-bold text-slate-700">
+            {isUrdu ? 'کوئی ڈلیوری ٹرپ نہیں ہے' : 'No delivery trips yet'}
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            {isUrdu
+              ? 'آرڈرز سے پہلا ٹرپ بنائیں تاکہ لائیو ٹریکنگ شروع ہو۔'
+              : 'Create your first trip from Orders to start live tracking.'}
+          </p>
+        </div>
+      )}
     </div>
   );
 };
