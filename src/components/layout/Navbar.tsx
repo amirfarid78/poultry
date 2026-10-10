@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { UserRole } from '../../types';
+import { VIEW_PERMISSIONS } from '../../lib/permissions';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
+import SyncBadge from '../common/SyncBadge';
 import { 
   LayoutDashboard,
   ShoppingCart, 
@@ -16,6 +18,7 @@ import {
   Wifi, 
   WifiOff, 
   UserCheck,
+  LogOut,
   TrendingUp,
   Building2,
   Edit3,
@@ -27,7 +30,8 @@ interface NavbarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   currentRole: UserRole;
-  setCurrentRole: (role: UserRole) => void;
+  onSignOut: () => void;
+  userName?: string | null;
   language: 'en' | 'ur';
   setLanguage: (lang: 'en' | 'ur') => void;
   todayMandiRate: number;
@@ -39,7 +43,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
   currentRole,
-  setCurrentRole,
+  onSignOut,
+  userName,
   language,
   setLanguage,
   todayMandiRate,
@@ -50,15 +55,16 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [tempRate, setTempRate] = useState(todayMandiRate.toString());
   const isUrdu = language === 'ur';
 
-  const roles: { value: UserRole; labelEn: string; labelUr: string }[] = [
-    { value: 'owner', labelEn: 'Owner / Admin (مالک)', labelUr: 'مالک / ایڈمن' },
-    { value: 'manager', labelEn: 'Manager (منیجر)', labelUr: 'منیجر' },
-    { value: 'accountant', labelEn: 'Accountant (اکاؤنٹنٹ)', labelUr: 'اکاؤنٹنٹ' },
-    { value: 'cashier', labelEn: 'Cashier / POS (کیشئر / منشی)', labelUr: 'منشی / کیشئر' },
-    { value: 'order_booker', labelEn: 'Order Booker (آرڈر بکر)', labelUr: 'آرڈر بکر' },
-    { value: 'driver', labelEn: 'Driver (ڈرائیور)', labelUr: 'ڈرائیور' },
-    { value: 'stock_keeper', labelEn: 'Stock Keeper (اسٹاک انچارج)', labelUr: 'اسٹاک انچارج' },
-  ];
+  const roleLabels: Record<UserRole, { labelEn: string; labelUr: string }> = {
+    owner: { labelEn: 'Owner / Admin (مالک)', labelUr: 'مالک / ایڈمن' },
+    manager: { labelEn: 'Manager (منیجر)', labelUr: 'منیجر' },
+    accountant: { labelEn: 'Accountant (اکاؤنٹنٹ)', labelUr: 'اکاؤنٹنٹ' },
+    cashier: { labelEn: 'Cashier / POS (کیشئر / منشی)', labelUr: 'منشی / کیشئر' },
+    order_booker: { labelEn: 'Order Booker (آرڈر بکر)', labelUr: 'آرڈر بکر' },
+    driver: { labelEn: 'Driver (ڈرائیور)', labelUr: 'ڈرائیور' },
+    stock_keeper: { labelEn: 'Stock Keeper (اسٹاک انچارج)', labelUr: 'اسٹاک انچارج' },
+    auditor: { labelEn: 'Auditor (آڈیٹر)', labelUr: 'آڈیٹر' }
+  };
 
   const navItems = [
     { id: 'dashboard', labelEn: 'Dashboard & Reports', labelUr: 'ڈیش بورڈ و رپورٹس', icon: LayoutDashboard },
@@ -76,6 +82,11 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'tests', labelEn: 'Acceptance Tests', labelUr: 'فارمولا ٹیسٹ تصدیق', icon: CheckCircle2 },
     { id: 'settings', labelEn: 'Settings', labelUr: 'ترتیبات و بیک اپ', icon: Settings }
   ];
+
+  // Only show the tabs this role is allowed to open
+  const visibleNavItems = navItems.filter((item) =>
+    (VIEW_PERMISSIONS[item.id as keyof typeof VIEW_PERMISSIONS] || []).includes(currentRole)
+  );
 
   const handleUpdateMandi = (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,21 +144,27 @@ export const Navbar: React.FC<NavbarProps> = ({
             <Edit3 className="w-3 h-3 text-emerald-400 ml-0.5" />
           </button>
 
-          {/* Role Switcher (RBAC) */}
-          <div className="flex items-center gap-1 bg-slate-900/80 border border-slate-700/70 rounded-lg px-2 py-1">
-            <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <select
-              value={currentRole}
-              onChange={(e) => setCurrentRole(e.target.value as UserRole)}
-              className="bg-transparent text-slate-200 text-xs font-medium focus:outline-none cursor-pointer pr-1"
-            >
-              {roles.map((r) => (
-                <option key={r.value} value={r.value} className="bg-slate-900 text-slate-100">
-                  {isUrdu ? r.labelUr : r.labelEn}
-                </option>
-              ))}
-            </select>
+          {/* Read-only Role Badge (role comes from the authenticated profile) */}
+          <div
+            className="flex items-center gap-1.5 bg-slate-900/80 border border-slate-700/70 rounded-lg px-2.5 py-1.5"
+            title={userName || undefined}
+          >
+            <UserCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className="text-slate-200 text-xs font-semibold whitespace-nowrap">
+              {isUrdu ? roleLabels[currentRole].labelUr : roleLabels[currentRole].labelEn}
+            </span>
           </div>
+
+          {/* Sign Out */}
+          <button
+            onClick={onSignOut}
+            className="bg-slate-900/80 hover:bg-slate-800 border border-slate-700/70 text-slate-300 hover:text-white
+                       rounded-lg px-2.5 py-1.5 transition flex items-center gap-1.5 text-xs font-medium"
+            title={isUrdu ? 'سائن آؤٹ' : 'Sign out'}
+          >
+            <LogOut className="w-3.5 h-3.5 text-slate-400" />
+            <span className="hidden sm:inline">{isUrdu ? 'سائن آؤٹ' : 'Sign out'}</span>
+          </button>
 
           {/* Language Switcher */}
           <button
@@ -169,6 +186,9 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span>{isOffline ? (isUrdu ? 'آف لائن' : 'Offline') : (isUrdu ? 'آن لائن' : 'Online')}</span>
           </div>
 
+          {/* Pending sync queue status */}
+          <SyncBadge language={language} />
+
           {/* PWA Install */}
           <PWAInstallButton isUrdu={isUrdu} />
         </div>
@@ -177,7 +197,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Navigation Bar Tabs */}
       <nav className="bg-emerald-900/90 border-t border-emerald-800/80 overflow-x-auto no-scrollbar">
         <div className="max-w-7xl mx-auto px-2 sm:px-4 flex items-center gap-1 py-1 min-w-max">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
             return (
