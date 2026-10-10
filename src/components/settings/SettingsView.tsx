@@ -1,5 +1,11 @@
 import React, { useState } from 'react';
 import { AppState } from '../../services/store';
+import { useAuth } from '../../context/AuthContext';
+import {
+  downloadFullBackup,
+  importBackupToOutbox,
+  cleanAllDataAndResetLocal,
+} from '../../lib/dataManagement';
 import { 
   exportFullBackupJSON, 
   exportInvoicesToCSV, 
@@ -23,7 +29,9 @@ import {
   ArrowRight,
   ShieldCheck,
   Smartphone,
-  HardDrive
+  HardDrive,
+  AlertTriangle,
+  Trash2
 } from 'lucide-react';
 
 interface SettingsViewProps {
@@ -51,6 +59,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const isUrdu = language === 'ur';
   const [notice, setNotice] = useState<string | null>(null);
+  const [noticeError, setNoticeError] = useState(false);
+  const { role } = useAuth();
+
+  // Danger zone state (owner only)
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [cleaning, setCleaning] = useState(false);
+
+  // Import state
+  const [importing, setImporting] = useState(false);
 
   // Quick Setup Wizard State
   const [showQuickSetupModal, setShowQuickSetupModal] = useState(false);
@@ -80,23 +97,75 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
+  const showNotice = (msg: string, isErr = false, ms = 6000) => {
+    setNotice(msg);
+    setNoticeError(isErr);
+    setTimeout(() => {
+      setNotice(null);
+      setNoticeError(false);
+    }, ms);
+  };
+
   const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const res = validateAndParseImportedState(event.target?.result as string);
-      if (res.success && res.state) {
-        onImportState(res.state);
-        setNotice(isUrdu ? 'ڈیٹا کامیابی سے بحال ہو گیا! تمام کھاتے درست ہیں۔' : 'Data restored successfully from backup!');
-        setTimeout(() => setNotice(null), 5000);
-      } else {
-        alert(isUrdu ? `بیک اپ فائل میں نقص ہے: ${res.error}` : `Invalid backup file: ${res.error}`);
+      if (!res.success || !res.state) {
+        showNotice(
+          isUrdu ? `بیک اپ فائل میں نقص ہے: ${res.error}` : `Invalid backup file: ${res.error}`,
+          true
+        );
+        return;
+      }
+      // 1. Instant local update (existing behavior).
+      onImportState(res.state);
+      // 2. Queue every record through the outbox so it syncs to Supabase.
+      setImporting(true);
+      try {
+        const r = await importBackupToOutbox(res.state);
+        const errBit = r.errors.length > 0
+          ? (isUrdu ? ` خرابیاں: ${r.errors.join('; ')}` : ` Errors: ${r.errors.join('; ')}`)
+          : '';
+        showNotice(
+          isUrdu
+            ? `ڈیٹا بحال ہو گیا! ${r.imported} ریکارڈ سنک قطار میں شامل۔${errBit}`
+            : `Backup restored! ${r.imported} records queued for sync.${errBit}`,
+          r.errors.length > 0
+        );
+      } catch (err: any) {
+        showNotice(
+          isUrdu ? `سنک میں خرابی: ${err?.message || err}` : `Sync queue failed: ${err?.message || err}`,
+          true
+        );
+      } finally {
+        setImporting(false);
       }
     };
     reader.readAsText(file);
     e.target.value = '';
+  };
+
+  const handleCleanAllData = async () => {
+    if (deleteConfirm.trim().toUpperCase() !== 'DELETE') return;
+    if (!confirm(isUrdu
+      ? 'آخری تنبیہ: تمام کاروباری ڈیٹا مستقل طور پر حذف ہو جائے گا۔ جاری رکھیں؟'
+      : 'FINAL WARNING: All business data will be permanently deleted. Continue?')) {
+      return;
+    }
+    setCleaning(true);
+    try {
+      await cleanAllDataAndResetLocal();
+      // reload happens inside cleanAllDataAndResetLocal
+    } catch (err: any) {
+      setCleaning(false);
+      showNotice(
+        isUrdu ? `ڈیٹا صاف کرنے میں ناکامی: ${err?.message || err}` : `Clean failed: ${err?.message || err}`,
+        true
+      );
+    }
   };
 
   return (
@@ -125,8 +194,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </div>
 
       {notice && (
-        <div className="p-3 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in shadow-md">
-          <CheckCircle className="w-4 h-4 shrink-0" />
+        <div className={`p-3 text-white rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in shadow-md ${noticeError ? 'bg-red-600' : 'bg-emerald-600'}`}>
+          {noticeError ? <AlertTriangle className="w-4 h-4 shrink-0" /> : <CheckCircle className="w-4 h-4 shrink-0" />}
           <span>{notice}</span>
         </div>
       )}
@@ -178,9 +247,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
           <label className="w-full py-2.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition shadow-sm">
             <Upload className="w-4 h-4" />
-            <span>{isUrdu ? 'بیک اپ فائل منتخب کریں' : 'Choose Backup File'}</span>
-            <input type="file" accept=".json" onChange={handleImportJSON} className="hidden" />
+            <span>{importing ? (isUrdu ? 'سنک ہو رہا ہے…' : 'Syncing…') : (isUrdu ? 'بیک اپ فائل منتخب کریں' : 'Choose Backup File')}</span>
+            <input type="file" accept=".json" onChange={handleImportJSON} className="hidden" disabled={importing} />
           </label>
+          <p className="text-[10px] text-slate-400 -mt-1">
+            {isUrdu
+              ? 'بحالی کے بعد تمام ریکارڈ خودکار طور پر ڈیٹابیس سے سنک ہو جائیں گے۔'
+              : 'After restore, every record is queued and auto-synced to the database.'}
+          </p>
         </div>
 
         {/* Reset Demo Seed */}
@@ -304,6 +378,55 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* SECTION: DANGER ZONE (owner only) */}
+      {role === 'owner' && (
+        <div className="bg-white p-6 rounded-2xl border-2 border-red-200 shadow-sm space-y-4">
+          <div className="flex items-center gap-2 border-b border-red-100 pb-3">
+            <AlertTriangle className="w-5 h-5 text-red-600" />
+            <div>
+              <h3 className="text-sm font-extrabold text-red-700">
+                {isUrdu ? 'خطرناک زون: تمام ڈیٹا حذف کریں' : 'Danger Zone: Delete All Data'}
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                {isUrdu
+                  ? 'یہ تمام کاروباری ریکارڈ (گاہک، بل، بہی کھاتہ، اسٹاک، اخراجات) مستقل طور پر حذف کر دے گا۔ صارف اکاؤنٹس محفوظ رہیں گے۔'
+                  : 'Permanently deletes ALL business records (parties, invoices, ledgers, stock, expenses). User accounts are kept.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex-1">
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                {isUrdu
+                  ? 'تصدیق کے لیے DELETE لکھیں:'
+                  : 'Type DELETE to confirm:'}
+              </label>
+              <input
+                type="text"
+                value={deleteConfirm}
+                onChange={(e) => setDeleteConfirm(e.target.value)}
+                placeholder="DELETE"
+                className="w-full sm:max-w-xs px-3 py-2 rounded-xl border border-red-300 font-mono font-bold text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-red-500"
+              />
+            </div>
+            <button
+              onClick={handleCleanAllData}
+              disabled={deleteConfirm.trim().toUpperCase() !== 'DELETE' || cleaning}
+              className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-xs font-black text-white bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-md"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>{cleaning ? (isUrdu ? 'حذف ہو رہا ہے…' : 'Deleting…') : (isUrdu ? 'تمام ڈیٹا حذف کریں' : 'Delete All Business Data')}</span>
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-400">
+            {isUrdu
+              ? 'حذف کرنے کے بعد مقامی کیش بھی صاف ہو جائے گا اور ایپ دوبارہ لوڈ ہو گی۔'
+              : 'Local caches are cleared and the app reloads after deletion.'}
+          </p>
+        </div>
+      )}
 
       {/* SECTION 3: ANYWHERE SETUP & OFFLINE DEPLOYMENT GUIDE */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">

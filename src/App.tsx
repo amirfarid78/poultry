@@ -721,7 +721,7 @@ function AppShell() {
     });
     // The journal entry itself syncs (engine resolves account codes -> ids).
     // Derived account/party/ledger adjustments stay local-only in v1.
-    void persist('insert', 'journal_entries', entry);
+    void persist('insert', 'journal_entries', { entry });
   };
 
   const handleDeleteGeneralEntry = (entryId: string) => {
