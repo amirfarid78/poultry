@@ -39,6 +39,7 @@ import { PublicInvoiceModal } from './components/public/PublicInvoiceModal';
 
 // Auth
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Login } from './components/auth/Login';
 import { Signup } from './components/auth/Signup';
 import { DEFAULT_TAB, canView } from './lib/permissions';
@@ -1115,8 +1116,10 @@ function AppShell() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppShell />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <AppShell />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
