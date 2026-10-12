@@ -1,4 +1,28 @@
-// Types for Murgh Mandi Poultry ERP
+// Types for Nawaz Poultry ERP
+
+export interface BusinessSettings {
+  id: number;
+  nameEn: string;
+  nameUr: string;
+  tagline: string;
+  phone: string;
+  address: string;
+  city: string;
+  logoUrl: string;
+  updatedAt: string;
+}
+
+export const DEFAULT_BUSINESS_SETTINGS: BusinessSettings = {
+  id: 1,
+  nameEn: 'Nawaz Poultry',
+  nameUr: 'نواز پولٹری',
+  tagline: 'Since 1995',
+  phone: '',
+  address: '',
+  city: 'Lahore',
+  logoUrl: '/logo.png',
+  updatedAt: new Date().toISOString(),
+};
 
 export type UserRole = 
   | 'owner'

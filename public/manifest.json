@@ -1,12 +1,12 @@
 {
   "id": "/",
-  "name": "Murgh Mandi - Poultry Sales ERP & Ledger",
-  "short_name": "MurghMandi",
+  "name": "Nawaz Poultry - Poultry Sales ERP & Ledger",
+  "short_name": "NawazPoultry",
   "description": "Complete Pakistani Poultry Sales ERP, POS, Traditional Urdu Khata Ledger, Order Booking & Fleet Tracking.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "theme_color": "#166534",
+  "theme_color": "#B8860B",
   "background_color": "#f8fafc",
   "orientation": "portrait-primary",
   "icons": [

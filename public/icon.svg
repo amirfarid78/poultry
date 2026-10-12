@@ -1,31 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" rx="100" fill="#166534" />
-  <circle cx="256" cy="256" r="220" fill="none" stroke="#22c55e" stroke-width="8" opacity="0.4" />
-  
-  <!-- Rooster silhouette -->
-  <path d="M190 380 C190 390 180 410 170 410 C160 410 185 390 190 380 Z" fill="#f59e0b" />
-  <path d="M220 380 L220 420 M210 420 L230 420" stroke="#f59e0b" stroke-width="12" stroke-linecap="round" />
-  <path d="M260 380 L260 420 M250 420 L270 420" stroke="#f59e0b" stroke-width="12" stroke-linecap="round" />
-  
-  <!-- Bird Body & Wing -->
-  <path d="M160 290 C140 250 140 200 170 170 C190 150 220 150 240 170 C270 140 310 130 340 160 C370 190 360 250 330 290 C290 340 200 350 160 290 Z" fill="#ffffff" />
-  <path d="M190 260 C210 230 250 230 280 260 C260 290 220 290 190 260 Z" fill="#dcfce7" />
-  
-  <!-- Comb (Crest) & Wattle -->
-  <path d="M330 140 C340 110 370 110 370 135 C385 125 405 135 395 155 C390 165 375 170 365 170 Z" fill="#dc2626" />
-  <path d="M380 205 C395 210 390 230 375 225 Z" fill="#dc2626" />
-  
-  <!-- Beak -->
-  <polygon points="380,185 415,195 380,205" fill="#f59e0b" />
-  <!-- Eye -->
-  <circle cx="360" cy="180" r="7" fill="#0f172a" />
-  <circle cx="362" cy="178" r="2.5" fill="#ffffff" />
-  
-  <!-- Tail Feathers -->
-  <path d="M165 210 C120 180 90 230 110 270 C130 290 155 280 165 260 Z" fill="#4ade80" />
-  <path d="M145 180 C110 140 70 190 95 235 Z" fill="#22c55e" />
-
-  <!-- Urdu Text / Badge -->
-  <rect x="96" y="380" width="320" height="60" rx="30" fill="#0f172a" opacity="0.85" />
-  <text x="256" y="422" font-family="Noto Nastaliq Urdu, sans-serif" font-size="28" font-weight="bold" fill="#fef08a" text-anchor="middle">مرغ منڈی کھاتہ</text>
+  <rect width="512" height="512" rx="112" fill="#E8A317"/>
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#FFFFFF" stroke-width="14" opacity="0.85"/>
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#FFFFFF" stroke-width="5" opacity="0.5"/>
+  <polygon points="256,128 266,152 292,152 271,167 279,193 256,178 233,193 241,167 220,152 246,152" fill="#FFFFFF"/>
+  <text x="256" y="352" font-family="Georgia, 'Times New Roman', serif" font-size="170" font-weight="bold" fill="#FFFFFF" text-anchor="middle">N</text>
 </svg>

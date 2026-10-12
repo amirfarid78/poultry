@@ -39,6 +39,7 @@ import { PublicInvoiceModal } from './components/public/PublicInvoiceModal';
 
 // Auth
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { BusinessProvider } from './context/BusinessContext';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Login } from './components/auth/Login';
 import { Signup } from './components/auth/Signup';
@@ -1118,7 +1119,9 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AuthProvider>
-        <AppShell />
+        <BusinessProvider>
+          <AppShell />
+        </BusinessProvider>
       </AuthProvider>
     </ErrorBoundary>
   );
