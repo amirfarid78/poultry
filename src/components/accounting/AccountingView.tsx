@@ -338,7 +338,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const totalExpenses = accounts.filter(a => a.category === 'expense').reduce((s, a) => s + a.balance, 0);
   const grossProfit = totalRevenue - totalCOGS;
   const netProfit = totalRevenue - totalExpenses;
-  const totalSalesKg = dayClosing.totalSalesKg || 2840;
+  const totalSalesKg = dayClosing.totalSalesKg ?? 0;
   const profitPerKg = totalSalesKg > 0 ? (netProfit / totalSalesKg) : 0;
 
   return (
