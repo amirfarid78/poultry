@@ -33,6 +33,7 @@ import type {
   ExpenseItem,
   GeneralJournalEntry,
   UserProfile,
+  BusinessSettings,
 } from '../types';
 import type { AppState } from '../services/store';
 
@@ -684,6 +685,55 @@ export async function fetchProfiles(db: Db): Promise<UserProfile[]> {
   const { data, error } = await db.from('profiles').select('*').order('full_name');
   if (error) throw error;
   return (data as Row[]).map(mapProfile);
+}
+
+// ---------------------------------------------------------------------------
+// Business settings (single-row branding/profile table)
+// ---------------------------------------------------------------------------
+
+function mapBusinessSettings(r: Row): BusinessSettings {
+  return {
+    id: 1,
+    nameEn: r.name_en || 'Nawaz Poultry',
+    nameUr: r.name_ur || 'نواز پولٹری',
+    tagline: r.tagline || '',
+    phone: r.phone || '',
+    address: r.address || '',
+    city: r.city || '',
+    logoUrl: r.logo_url || '/logo.png',
+    updatedAt: r.updated_at || new Date().toISOString(),
+  };
+}
+
+export async function fetchBusinessSettings(db: Db): Promise<BusinessSettings | null> {
+  const { data, error } = await db
+    .from('business_settings')
+    .select('*')
+    .eq('id', 1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapBusinessSettings(data as Row) : null;
+}
+
+export async function updateBusinessSettings(
+  db: Db,
+  patch: Partial<Omit<BusinessSettings, 'id' | 'updatedAt'>>
+): Promise<BusinessSettings> {
+  const row: Row = { id: 1 };
+  if (patch.nameEn !== undefined) row.name_en = patch.nameEn;
+  if (patch.nameUr !== undefined) row.name_ur = patch.nameUr;
+  if (patch.tagline !== undefined) row.tagline = patch.tagline;
+  if (patch.phone !== undefined) row.phone = patch.phone;
+  if (patch.address !== undefined) row.address = patch.address;
+  if (patch.city !== undefined) row.city = patch.city;
+  if (patch.logoUrl !== undefined) row.logo_url = patch.logoUrl;
+  const { data, error } = await db
+    .from('business_settings')
+    .upsert(row, { onConflict: 'id' })
+    .select()
+    .single();
+  if (error) throw error;
+  return mapBusinessSettings(data as Row);
 }
 
 /**

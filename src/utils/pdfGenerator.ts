@@ -1,11 +1,133 @@
 import { jsPDF } from 'jspdf';
-import { Invoice, Party, LedgerEntry } from '../types';
+import { Invoice, Party, LedgerEntry, BusinessSettings } from '../types';
 import { formatPKR } from './calculations';
+
+/** Branding passed to PDF generators. logoDataUrl is a PNG/JPEG data URL (or undefined). */
+export interface PdfBranding {
+  nameEn: string;
+  nameUr: string;
+  tagline: string;
+  phone: string;
+  address: string;
+  city: string;
+  logoDataUrl?: string;
+}
+
+export function brandingFromSettings(s: BusinessSettings, logoDataUrl?: string): PdfBranding {
+  return {
+    nameEn: s.nameEn,
+    nameUr: s.nameUr,
+    tagline: s.tagline,
+    phone: s.phone,
+    address: s.address,
+    city: s.city,
+    logoDataUrl,
+  };
+}
+
+const logoCache = new Map<string, string | undefined>();
+
+/** Fetch a logo URL (relative path or data URL) and return a data URL for jsPDF. Cached. */
+export async function loadLogoDataUrl(logoUrl: string): Promise<string | undefined> {
+  if (!logoUrl) return undefined;
+  if (logoUrl.startsWith('data:')) return logoUrl;
+  if (logoCache.has(logoUrl)) return logoCache.get(logoUrl);
+  try {
+    const res = await fetch(logoUrl);
+    if (!res.ok) throw new Error('logo fetch failed');
+    const blob = await res.blob();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result as string);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+    logoCache.set(logoUrl, dataUrl);
+    return dataUrl;
+  } catch {
+    logoCache.set(logoUrl, undefined);
+    return undefined;
+  }
+}
+
+const GOLD: [number, number, number] = [184, 134, 11];      // dark gold #B8860B
+const GOLD_LIGHT: [number, number, number] = [253, 246, 227]; // pale gold wash
+const INK: [number, number, number] = [30, 41, 59];
+
+/** Shared letterhead: logo left, business name + contact right, gold rule below. Returns y below the rule. */
+function drawLetterhead(
+  doc: jsPDF,
+  branding: PdfBranding | undefined,
+  pageWidth: number,
+  opts: { titleEn: string; titleUr?: string; subtitle?: string } = { titleEn: 'SALE INVOICE' }
+): number {
+  const b: PdfBranding = branding ?? {
+    nameEn: 'Nawaz Poultry',
+    nameUr: 'نواز پولٹری',
+    tagline: 'Since 1995',
+    phone: '',
+    address: '',
+    city: 'Lahore',
+  };
+
+  let y = 8;
+  const logoW = 26;
+  const logoH = 20;
+  if (b.logoDataUrl) {
+    try {
+      doc.addImage(b.logoDataUrl, 'PNG', 10, y - 2, logoW, logoH);
+    } catch {
+      /* logo decode failed — continue without it */
+    }
+  }
+  const textX = b.logoDataUrl ? 10 + logoW + 4 : 10;
+
+  doc.setTextColor(...GOLD);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.text(b.nameEn.toUpperCase(), textX, y + 4);
+  y += 4;
+
+  if (b.tagline) {
+    doc.setTextColor(100, 116, 139);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text(b.tagline, textX, y + 4);
+    y += 4;
+  }
+
+  const contact = [b.phone, [b.address, b.city].filter(Boolean).join(', ')].filter(Boolean).join('  |  ');
+  if (contact) {
+    doc.setTextColor(71, 85, 105);
+    doc.setFontSize(7.5);
+    doc.text(contact, textX, y + 4);
+    y += 4;
+  }
+
+  y = Math.max(y + 6, 30);
+
+  // Gold rule
+  doc.setDrawColor(...GOLD);
+  doc.setLineWidth(0.8);
+  doc.line(10, y, pageWidth - 10, y);
+  y += 6;
+
+  // Document title band
+  doc.setFillColor(...GOLD_LIGHT);
+  doc.roundedRect(10, y - 4, pageWidth - 20, 9, 1.5, 1.5, 'F');
+  doc.setTextColor(...INK);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.text(opts.titleEn, pageWidth / 2, y + 2, { align: 'center' });
+  y += 9;
+
+  return y;
+}
 
 /**
  * Generates an official printable PDF for a Poultry Sale Invoice
  */
-export function generateInvoicePDF(invoice: Invoice, businessName = 'Murgh Mandi Poultry (مرغ منڈی)'): jsPDF {
+export function generateInvoicePDF(invoice: Invoice, branding?: PdfBranding): jsPDF {
   // A5 format is standard for wholesale invoices (148 x 210 mm)
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -15,75 +137,66 @@ export function generateInvoicePDF(invoice: Invoice, businessName = 'Murgh Mandi
 
   const pageWidth = doc.internal.pageSize.getWidth();
 
-  // Header Banner
-  doc.setFillColor(22, 101, 52); // Emerald 800
-  doc.rect(0, 0, pageWidth, 24, 'F');
-
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(14);
-  doc.setFont('helvetica', 'bold');
-  doc.text('MURGH MANDI POULTRY TRADERS', pageWidth / 2, 9, { align: 'center' });
-
-  doc.setFontSize(8);
-  doc.setFont('helvetica', 'normal');
-  doc.text('Wholesale Broiler Chicken & Khata System | Lahore, Pakistan', pageWidth / 2, 14, { align: 'center' });
-  doc.text('Phone: 0300-1234567 | NTN: 8923412-1', pageWidth / 2, 18, { align: 'center' });
+  // Letterhead with logo + business profile
+  let y = drawLetterhead(doc, branding, pageWidth, { titleEn: 'SALE INVOICE (سیل انوائس)' });
 
   // Sub Header: Invoice Details
   doc.setTextColor(30, 41, 59);
   doc.setFontSize(9);
   doc.setFont('helvetica', 'bold');
-  doc.text(`INVOICE #: ${invoice.invoiceNumber}`, 10, 32);
-  doc.text(`DATE: ${invoice.invoiceDate}`, pageWidth - 10, 32, { align: 'right' });
+  doc.text(`INVOICE #: ${invoice.invoiceNumber}`, 10, y);
+  doc.text(`DATE: ${invoice.invoiceDate}`, pageWidth - 10, y, { align: 'right' });
+  y += 4;
 
   // Customer Box
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(226, 232, 240);
-  doc.roundedRect(10, 36, pageWidth - 20, 18, 2, 2, 'FD');
+  doc.roundedRect(10, y, pageWidth - 20, 18, 2, 2, 'FD');
 
   doc.setFontSize(8);
   doc.setTextColor(71, 85, 105);
-  doc.text('Customer / Shop:', 14, 42);
-  doc.text('Previous Balance:', pageWidth - 14, 42, { align: 'right' });
+  doc.text('Customer / Shop:', 14, y + 6);
+  doc.text('Previous Balance:', pageWidth - 14, y + 6, { align: 'right' });
 
   doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
   doc.setFont('helvetica', 'bold');
-  doc.text(invoice.customerName || invoice.customerUrduName, 14, 48);
+  doc.text(invoice.customerName || invoice.customerUrduName, 14, y + 12);
 
   const prevBalStr = invoice.previousBalance < 0 
     ? `-Rs ${Math.abs(invoice.previousBalance).toLocaleString()} (Adv)` 
     : `Rs ${invoice.previousBalance.toLocaleString()}`;
-  doc.text(prevBalStr, pageWidth - 14, 48, { align: 'right' });
+  doc.text(prevBalStr, pageWidth - 14, y + 12, { align: 'right' });
+  y += 18;
 
   // Line Items Table Header
   doc.setFillColor(241, 245, 249);
-  doc.rect(10, 58, pageWidth - 20, 7, 'F');
+  doc.rect(10, y + 4, pageWidth - 20, 7, 'F');
   doc.setDrawColor(203, 213, 225);
-  doc.line(10, 65, pageWidth - 10, 65);
+  doc.line(10, y + 11, pageWidth - 10, y + 11);
 
   doc.setFontSize(8);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(51, 65, 85);
-  doc.text('ITEM DESCRIPTION', 14, 63);
-  doc.text('WEIGHT (KG)', 65, 63, { align: 'right' });
-  doc.text('RATE / 40KG', 95, 63, { align: 'right' });
-  doc.text('TOTAL (PKR)', pageWidth - 14, 63, { align: 'right' });
+  doc.text('ITEM DESCRIPTION', 14, y + 9);
+  doc.text('WEIGHT (KG)', 65, y + 9, { align: 'right' });
+  doc.text('RATE / 40KG', 95, y + 9, { align: 'right' });
+  doc.text('TOTAL (PKR)', pageWidth - 14, y + 9, { align: 'right' });
 
   // Table Row
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(15, 23, 42);
-  doc.text(`Broiler Live Chicken (${invoice.birdCount || 40} birds)`, 14, 72);
-  doc.text(`${invoice.netWeightKg} kg`, 65, 72, { align: 'right' });
-  doc.text(`Rs ${invoice.saleRatePer40kg.toLocaleString()}`, 95, 72, { align: 'right' });
+  doc.text(`Broiler Live Chicken (${invoice.birdCount || 40} birds)`, 14, y + 18);
+  doc.text(`${invoice.netWeightKg} kg`, 65, y + 18, { align: 'right' });
+  doc.text(`Rs ${invoice.saleRatePer40kg.toLocaleString()}`, 95, y + 18, { align: 'right' });
   doc.setFont('helvetica', 'bold');
-  doc.text(`Rs ${invoice.totalAmount.toLocaleString()}`, pageWidth - 14, 72, { align: 'right' });
+  doc.text(`Rs ${invoice.totalAmount.toLocaleString()}`, pageWidth - 14, y + 18, { align: 'right' });
 
-  doc.line(10, 76, pageWidth - 10, 76);
+  doc.line(10, y + 22, pageWidth - 10, y + 22);
 
   // Bill Summary Block
-  let currentY = 82;
+  let currentY = y + 28;
   const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
 
   doc.setFontSize(8.5);
@@ -148,7 +261,7 @@ export function generateLedgerPDF(
   entries: LedgerEntry[], 
   startDate: string, 
   endDate: string,
-  businessName = 'Murgh Mandi Poultry (مرغ منڈی)'
+  branding?: PdfBranding
 ): jsPDF {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -158,37 +271,32 @@ export function generateLedgerPDF(
 
   const pageWidth = doc.internal.pageSize.getWidth();
 
-  // Header Banner
-  doc.setFillColor(22, 101, 52); // Emerald 800
-  doc.rect(0, 0, pageWidth, 26, 'F');
+  // Letterhead with logo + business profile
+  let y = drawLetterhead(doc, branding, pageWidth, { titleEn: 'CUSTOMER KHATA STATEMENT' });
 
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(16);
-  doc.setFont('helvetica', 'bold');
-  doc.text('MURGH MANDI POULTRY & KHATA SYSTEM', pageWidth / 2, 10, { align: 'center' });
-
-  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139);
+  doc.setFontSize(8.5);
   doc.setFont('helvetica', 'normal');
-  doc.text('Customer Khata Statement (کھاتہ اسٹیٹمنٹ)', pageWidth / 2, 16, { align: 'center' });
-  doc.text(`Period: ${startDate} to ${endDate} | Generated: ${new Date().toLocaleDateString()}`, pageWidth / 2, 21, { align: 'center' });
+  doc.text(`Period: ${startDate} to ${endDate}  |  Generated: ${new Date().toLocaleDateString()}`, pageWidth / 2, y, { align: 'center' });
+  y += 6;
 
   // Customer Summary Box
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(14, 32, pageWidth - 28, 20, 2, 2, 'FD');
+  doc.roundedRect(14, y, pageWidth - 28, 20, 2, 2, 'FD');
 
   doc.setTextColor(15, 23, 42);
   doc.setFontSize(11);
   doc.setFont('helvetica', 'bold');
-  doc.text(party.name, 18, 40);
+  doc.text(party.name, 18, y + 8);
   if (party.urduName) {
-    doc.text(party.urduName, 18, 46);
+    doc.text(party.urduName, 18, y + 14);
   }
 
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(71, 85, 105);
-  doc.text(`Phone: ${party.phone || '-'} | City: ${party.city || 'Lahore'}`, 18, 50);
+  doc.text(`Phone: ${party.phone || '-'} | City: ${party.city || 'Lahore'}`, 18, y + 18);
 
   const curBalStr = party.currentBalance < 0 
     ? `-Rs ${Math.abs(party.currentBalance).toLocaleString()} (Advance)` 
@@ -196,10 +304,10 @@ export function generateLedgerPDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(party.currentBalance < 0 ? 5 : 190, party.currentBalance < 0 ? 150 : 24, party.currentBalance < 0 ? 105 : 93);
-  doc.text(`Current Balance: ${curBalStr}`, pageWidth - 18, 44, { align: 'right' });
+  doc.text(`Current Balance: ${curBalStr}`, pageWidth - 18, y + 12, { align: 'right' });
+  y += 26;
 
   // Ledger Table Header
-  let y = 58;
   doc.setFillColor(241, 245, 249);
   doc.rect(14, y, pageWidth - 28, 8, 'F');
   doc.setDrawColor(203, 213, 225);
