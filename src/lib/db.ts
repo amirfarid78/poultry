@@ -34,6 +34,7 @@ import type {
   GeneralJournalEntry,
   UserProfile,
   BusinessSettings,
+  resolveLogoUrl,
 } from '../types';
 import type { AppState } from '../services/store';
 
@@ -700,7 +701,7 @@ function mapBusinessSettings(r: Row): BusinessSettings {
     phone: r.phone || '',
     address: r.address || '',
     city: r.city || '',
-    logoUrl: r.logo_url || '/logo.png',
+    logoUrl: resolveLogoUrl(r.logo_url),
     updatedAt: r.updated_at || new Date().toISOString(),
   };
 }
