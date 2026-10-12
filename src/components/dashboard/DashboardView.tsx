@@ -120,84 +120,67 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Mandi Margin Spread
   const avgSaleRate = invoices.length > 0 
     ? Math.round(invoices.reduce((s, i) => s + i.saleRatePer40kg, 0) / invoices.length) 
-    : 12200;
+    : 0;
   const mandiMarginSpread = avgSaleRate - todayMandiRate;
   const estimatedProfitToday = Math.round((todaySalesKg * mandiMarginSpread) / 40);
 
   // Mock Trend Data for Charts (7 Days of Mandi & Sales)
-  const salesTrendData = [
-    { day: 'Mon (پیر)', salesRs: 720000, weightKg: 2400, mandiRate: 11800, saleRate: 12050 },
-    { day: 'Tue (منگل)', salesRs: 790000, weightKg: 2600, mandiRate: 11900, saleRate: 12150 },
-    { day: 'Wed (بدھ)', salesRs: 840000, weightKg: 2750, mandiRate: 11950, saleRate: 12200 },
-    { day: 'Thu (جمعرات)', salesRs: 810000, weightKg: 2680, mandiRate: 12000, saleRate: 12220 },
-    { day: 'Fri (جمعہ)', salesRs: 910000, weightKg: 2950, mandiRate: 12050, saleRate: 12300 },
-    { day: 'Sat (ہفتہ)', salesRs: 880000, weightKg: 2890, mandiRate: 12000, saleRate: 12250 },
-    { day: 'Today (آج)', salesRs: todaySalesAmount, weightKg: todaySalesKg, mandiRate: todayMandiRate, saleRate: avgSaleRate },
-  ];
+  // Last 7 calendar days (oldest → today) as YYYY-MM-DD strings.
+  const last7DayKeys: string[] = [...Array(7)].map((_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    return d.toISOString().split('T')[0];
+  });
+  const URDU_WEEKDAYS = ['اتوار', 'پیر', 'منگل', 'بدھ', 'جمعرات', 'جمعہ', 'ہفتہ'];
+  const EN_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dayLabel = (dateStr: string, i: number): string => {
+    if (i === 6) return isUrdu ? 'آج' : 'Today';
+    const dow = new Date(dateStr + 'T12:00:00').getDay();
+    return isUrdu ? URDU_WEEKDAYS[dow] : EN_WEEKDAYS[dow];
+  };
 
-  // Daily Profit Trend: Net Gains vs Operating Expenses
-  const dailyProfitTrendData = [
-    { 
-      day: isUrdu ? 'پیر' : 'Mon',
-      grossGain: 51200, 
-      operatingExpenses: 13500, 
-      netGain: 37700,
-      marginPct: 73.6,
-      breakdown: isUrdu ? 'ڈیزل: 4,500 | لیبر: 6,000 | شیڈ: 3,000' : 'Fuel: 4,500 | Labor: 6,000 | Shed: 3,000'
-    },
-    { 
-      day: isUrdu ? 'منگل' : 'Tue',
-      grossGain: 55400, 
-      operatingExpenses: 14200, 
-      netGain: 41200,
-      marginPct: 74.3,
-      breakdown: isUrdu ? 'ڈیزل: 4,800 | لیبر: 6,000 | شیڈ: 3,400' : 'Fuel: 4,800 | Labor: 6,000 | Shed: 3,400'
-    },
-    { 
-      day: isUrdu ? 'بدھ' : 'Wed',
-      grossGain: 59100, 
-      operatingExpenses: 15100, 
-      netGain: 44000,
-      marginPct: 74.4,
-      breakdown: isUrdu ? 'ڈیزل: 5,200 | لیبر: 6,500 | شیڈ: 3,400' : 'Fuel: 5,200 | Labor: 6,500 | Shed: 3,400'
-    },
-    { 
-      day: isUrdu ? 'جمعرات' : 'Thu',
-      grossGain: 57000, 
-      operatingExpenses: 14000, 
-      netGain: 43000,
-      marginPct: 75.4,
-      breakdown: isUrdu ? 'ڈیزل: 4,500 | لیبر: 6,500 | شیڈ: 3,000' : 'Fuel: 4,500 | Labor: 6,500 | Shed: 3,000'
-    },
-    { 
-      day: isUrdu ? 'جمعہ' : 'Fri',
-      grossGain: 65200, 
-      operatingExpenses: 16800, 
-      netGain: 48400,
-      marginPct: 74.2,
-      breakdown: isUrdu ? 'ڈیزل: 6,200 | لیبر: 7,000 | شیڈ: 3,600' : 'Fuel: 6,200 | Labor: 7,000 | Shed: 3,600'
-    },
-    { 
-      day: isUrdu ? 'ہفتہ' : 'Sat',
-      grossGain: 61500, 
-      operatingExpenses: 15400, 
-      netGain: 46100,
-      marginPct: 74.9,
-      breakdown: isUrdu ? 'ڈیزل: 5,500 | لیبر: 6,500 | شیڈ: 3,400' : 'Fuel: 5,500 | Labor: 6,500 | Shed: 3,400'
-    },
-    { 
-      day: isUrdu ? 'آج' : 'Today',
-      grossGain: estimatedProfitToday + (expenses?.reduce((s, e) => s + e.amount, 0) ?? 0), 
-      operatingExpenses: expenses && expenses.length > 0 ? expenses.reduce((s, e) => s + e.amount, 0) : 0, 
-      netGain: estimatedProfitToday,
-      marginPct: estimatedProfitToday + (expenses?.reduce((s, e) => s + e.amount, 0) ?? 0) > 0
-        ? Math.round((estimatedProfitToday / (estimatedProfitToday + (expenses?.reduce((s, e) => s + e.amount, 0) ?? 0))) * 100)
-        : 0,
-      breakdown: isUrdu 
-        ? `ڈیزل: ${(expenses?.filter(e => e.category === 'fuel').reduce((s, e) => s + e.amount, 0) ?? 0).toLocaleString()} | لیبر: ${(expenses?.filter(e => e.category === 'labor').reduce((s, e) => s + e.amount, 0) ?? 0).toLocaleString()}` 
-        : `Fuel: ${(expenses?.filter(e => e.category === 'fuel').reduce((s, e) => s + e.amount, 0) ?? 0).toLocaleString()} | Labor: ${(expenses?.filter(e => e.category === 'labor').reduce((s, e) => s + e.amount, 0) ?? 0).toLocaleString()}`
-    },
-  ];
+  // Sales & volume trend computed from REAL invoices. Empty days show zero —
+  // no demo data is ever injected.
+  const salesTrendData = last7DayKeys.map((dateStr, i) => {
+    const dayInvoices = invoices.filter((inv) => inv.invoiceDate === dateStr);
+    const salesRs = dayInvoices.reduce((s, inv) => s + (inv.totalAmount || 0), 0);
+    const weightKg = dayInvoices.reduce((s, inv) => s + (inv.netWeightKg || 0), 0);
+    const saleRate = dayInvoices.length > 0
+      ? Math.round(dayInvoices.reduce((s, inv) => s + (inv.saleRatePer40kg || 0), 0) / dayInvoices.length)
+      : 0;
+    return {
+      day: dayLabel(dateStr, i),
+      salesRs,
+      weightKg,
+      mandiRate: i === 6 ? todayMandiRate : 0,
+      saleRate,
+    };
+  });
+
+  // Daily Profit Trend computed from REAL invoices + expenses.
+  // Gross gain per invoice ≈ (saleRate − mandiRate) × kg ÷ 40.
+  const dailyProfitTrendData = last7DayKeys.map((dateStr, i) => {
+    const dayInvoices = invoices.filter((inv) => inv.invoiceDate === dateStr);
+    const dayExpenses = (expenses ?? []).filter((e) => e.date === dateStr);
+    const operatingExpenses = dayExpenses.reduce((s, e) => s + (e.amount || 0), 0);
+    const grossGain = dayInvoices.reduce((s, inv) => {
+      const margin = (inv.saleRatePer40kg || 0) - todayMandiRate;
+      return s + Math.round((margin * (inv.netWeightKg || 0)) / 40);
+    }, 0);
+    const netGain = grossGain - operatingExpenses;
+    const fuel = dayExpenses.filter((e) => e.category === 'fuel').reduce((s, e) => s + (e.amount || 0), 0);
+    const labor = dayExpenses.filter((e) => e.category === 'labor').reduce((s, e) => s + (e.amount || 0), 0);
+    return {
+      day: dayLabel(dateStr, i),
+      grossGain,
+      operatingExpenses,
+      netGain,
+      marginPct: grossGain > 0 ? Math.round((netGain / grossGain) * 100) : 0,
+      breakdown: isUrdu
+        ? `ڈیزل: ${fuel.toLocaleString()} | لیبر: ${labor.toLocaleString()}`
+        : `Fuel: ${fuel.toLocaleString()} | Labor: ${labor.toLocaleString()}`,
+    };
+  });
 
   const total7DayNetGain = dailyProfitTrendData.reduce((s, d) => s + d.netGain, 0);
   const total7DayExpenses = dailyProfitTrendData.reduce((s, d) => s + d.operatingExpenses, 0);
