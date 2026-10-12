@@ -220,7 +220,7 @@ export function exportRoznamchaToCSV(appState: AppState): void {
 export function exportFullBackupJSON(appState: AppState): void {
   const backupObject = {
     metadata: {
-      software: 'Murgh Mandi Poultry ERP & Wholesale Billing',
+      software: 'Nawaz Poultry ERP & Wholesale Billing',
       version: '2.5.0',
       exportedAt: new Date().toISOString(),
       recordCount: {
