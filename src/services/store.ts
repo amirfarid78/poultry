@@ -765,16 +765,67 @@ export interface AppState {
   isOffline: boolean;
 }
 
+/** A truly empty state used after a Danger-zone wipe. All collections empty,
+ *  all money KPIs zero — no seed/demo values. */
+export function createBlankState(language: 'en' | 'ur' = 'ur'): AppState {
+  return {
+    currentRole: 'owner',
+    language,
+    todayMandiRate: 0,
+    parties: [],
+    invoices: [],
+    receipts: [],
+    ledgerEntries: [],
+    purchases: [],
+    expenses: [],
+    generalEntries: [],
+    orders: [],
+    vehicles: [],
+    trips: [],
+    inventory: [],
+    accounts: [],
+    employees: [],
+    dayClosing: {
+      id: `close-${new Date().toISOString().split('T')[0]}`,
+      date: new Date().toISOString().split('T')[0],
+      physicalCash: 0,
+      systemCash: 0,
+      variance: 0,
+      totalSalesKg: 0,
+      totalSalesAmount: 0,
+      totalCollections: 0,
+      isLocked: false,
+      lockedBy: '',
+    },
+    isOffline: typeof navigator !== 'undefined' ? !navigator.onLine : false,
+  };
+}
+
 export function loadSavedState(): AppState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      // Trust what was saved — even empty arrays. Only fall back to seed
+      // values for keys that are entirely missing (old saves).
       return {
-        ...parsed,
-        receipts: parsed.receipts && parsed.receipts.length > 0 ? parsed.receipts : INITIAL_RECEIPTS,
-        generalEntries: parsed.generalEntries && parsed.generalEntries.length > 0 ? parsed.generalEntries : INITIAL_GENERAL_ENTRIES,
-        expenses: parsed.expenses && parsed.expenses.length > 0 ? parsed.expenses : INITIAL_EXPENSES,
+        currentRole: parsed.currentRole ?? 'owner',
+        language: parsed.language ?? 'ur',
+        todayMandiRate: parsed.todayMandiRate ?? 0,
+        parties: parsed.parties ?? [],
+        invoices: parsed.invoices ?? [],
+        receipts: parsed.receipts ?? [],
+        ledgerEntries: parsed.ledgerEntries ?? [],
+        purchases: parsed.purchases ?? [],
+        expenses: parsed.expenses ?? [],
+        generalEntries: parsed.generalEntries ?? [],
+        orders: parsed.orders ?? [],
+        vehicles: parsed.vehicles ?? [],
+        trips: parsed.trips ?? [],
+        inventory: parsed.inventory ?? [],
+        accounts: parsed.accounts ?? [],
+        employees: parsed.employees ?? [],
+        dayClosing: parsed.dayClosing ?? createBlankState().dayClosing,
         isOffline: !navigator.onLine
       };
     }
