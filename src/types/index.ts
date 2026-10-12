@@ -1,6 +1,6 @@
 // Types for Nawaz Poultry ERP
 
-import { NAWAZ_LOGO_DATA_URL } from './assets/logo';
+import { NAWAZ_LOGO_DATA_URL } from '../assets/logo';
 
 export interface BusinessSettings {
   id: number;
