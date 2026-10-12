@@ -102,20 +102,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const totalReceivables = customers.reduce((sum, c) => sum + Math.max(0, c.currentBalance), 0);
   const totalAdvances = customers.reduce((sum, c) => sum + Math.abs(Math.min(0, c.currentBalance)), 0);
 
-  // Liquidity calculation
-  const cashInHand = accounts.find((a) => a.code === '1010')?.balance || 840000;
-  const bankBalance = accounts.find((a) => a.code === '1020')?.balance || 1450000;
-  const walletsBalance = (accounts.find((a) => a.code === '1030')?.balance || 0) + (accounts.find((a) => a.code === '1040')?.balance || 0);
+  // Liquidity calculation — no phantom defaults: empty accounts mean zero balances.
+  const cashInHand = accounts.find((a) => a.code === '1010')?.balance ?? 0;
+  const bankBalance = accounts.find((a) => a.code === '1020')?.balance ?? 0;
+  const walletsBalance = (accounts.find((a) => a.code === '1030')?.balance ?? 0) + (accounts.find((a) => a.code === '1040')?.balance ?? 0);
   const totalLiquidity = cashInHand + bankBalance + walletsBalance;
 
   // Farm Stock
   const liveBirdsCount = inventory.filter(i => i.category === 'broiler').reduce((s, i) => s + i.currentCount, 0);
   const liveBirdsWeight = inventory.filter(i => i.category === 'broiler').reduce((s, i) => s + i.currentWeightKg, 0);
 
-  // Sales Today
-  const todaySalesAmount = dayClosing.totalSalesAmount || 865000;
-  const todaySalesKg = dayClosing.totalSalesKg || 2840;
-  const todayCollections = dayClosing.totalCollections || 720000;
+  // Sales Today — no phantom defaults: no closing means zero sales.
+  const todaySalesAmount = dayClosing.totalSalesAmount ?? 0;
+  const todaySalesKg = dayClosing.totalSalesKg ?? 0;
+  const todayCollections = dayClosing.totalCollections ?? 0;
 
   // Mandi Margin Spread
   const avgSaleRate = invoices.length > 0 
@@ -187,13 +187,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     },
     { 
       day: isUrdu ? 'آج' : 'Today',
-      grossGain: Math.max(56800, estimatedProfitToday + (expenses?.reduce((s, e) => s + e.amount, 0) || 14200)), 
-      operatingExpenses: expenses && expenses.length > 0 ? expenses.reduce((s, e) => s + e.amount, 0) : 14200, 
-      netGain: Math.max(42600, estimatedProfitToday),
-      marginPct: Math.round((Math.max(42600, estimatedProfitToday) / Math.max(56800, estimatedProfitToday + (expenses?.reduce((s, e) => s + e.amount, 0) || 14200))) * 100),
+      grossGain: estimatedProfitToday + (expenses?.reduce((s, e) => s + e.amount, 0) ?? 0), 
+      operatingExpenses: expenses && expenses.length > 0 ? expenses.reduce((s, e) => s + e.amount, 0) : 0, 
+      netGain: estimatedProfitToday,
+      marginPct: estimatedProfitToday + (expenses?.reduce((s, e) => s + e.amount, 0) ?? 0) > 0
+        ? Math.round((estimatedProfitToday / (estimatedProfitToday + (expenses?.reduce((s, e) => s + e.amount, 0) ?? 0))) * 100)
+        : 0,
       breakdown: isUrdu 
-        ? `ڈیزل: ${expenses?.filter(e => e.category === 'fuel').reduce((s, e) => s + e.amount, 0).toLocaleString() || '4,500'} | لیبر: ${expenses?.filter(e => e.category === 'labor').reduce((s, e) => s + e.amount, 0).toLocaleString() || '6,500'}` 
-        : `Fuel: ${expenses?.filter(e => e.category === 'fuel').reduce((s, e) => s + e.amount, 0).toLocaleString() || '4,500'} | Labor: ${expenses?.filter(e => e.category === 'labor').reduce((s, e) => s + e.amount, 0).toLocaleString() || '6,500'}`
+        ? `ڈیزل: ${(expenses?.filter(e => e.category === 'fuel').reduce((s, e) => s + e.amount, 0) ?? 0).toLocaleString()} | لیبر: ${(expenses?.filter(e => e.category === 'labor').reduce((s, e) => s + e.amount, 0) ?? 0).toLocaleString()}` 
+        : `Fuel: ${(expenses?.filter(e => e.category === 'fuel').reduce((s, e) => s + e.amount, 0) ?? 0).toLocaleString()} | Labor: ${(expenses?.filter(e => e.category === 'labor').reduce((s, e) => s + e.amount, 0) ?? 0).toLocaleString()}`
     },
   ];
 
