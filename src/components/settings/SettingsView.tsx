@@ -38,8 +38,10 @@ import {
   Pencil,
   ImagePlus,
   Phone,
-  MapPin
+  MapPin,
+  Users
 } from 'lucide-react';
+import { UserManagement } from './UserManagement';
 
 /** Resize an uploaded image to a max dimension and return a PNG data URL. */
 function fileToResizedDataUrl(file: File, maxDim = 800): Promise<string> {
@@ -98,7 +100,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const isUrdu = language === 'ur';
   const [notice, setNotice] = useState<string | null>(null);
   const [noticeError, setNoticeError] = useState(false);
-  const { role } = useAuth();
+  const { role, profile } = useAuth();
+  const currentUserId = profile?.id ?? null;
   const { settings: biz, save: saveBiz, saving: savingBiz } = useBusiness();
   const isOwner = role === 'owner';
 
@@ -669,6 +672,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* SECTION: USER MANAGEMENT (owner only) */}
+      {role === 'owner' && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Users className="w-5 h-5 text-emerald-600" />
+            <div>
+              <h3 className="text-sm font-extrabold text-slate-900">
+                {isUrdu ? 'صارفین و رولز کا انتظام' : 'User & Role Management'}
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                {isUrdu
+                  ? 'نئے اسٹاف کو دعوت دیں، رول تفویض کریں، یا اکاؤنٹ فعال/غیر فعال کریں۔'
+                  : 'Invite staff, assign roles, or enable/disable accounts.'}
+              </p>
+            </div>
+          </div>
+          <UserManagement language={language} currentUserId={currentUserId} />
+        </div>
+      )}
 
       {/* SECTION: DANGER ZONE (owner only) */}
       {role === 'owner' && (
