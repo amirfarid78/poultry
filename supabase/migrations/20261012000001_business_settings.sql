@@ -6,6 +6,26 @@
 -- Authenticated users can read; only owners can update.
 -- ============================================================================
 
+-- Helper (also defined in 20261010000001_role_based_rls.sql): included here so
+-- this file runs standalone even if that migration was missed.
+DO $$ BEGIN
+  CREATE TYPE user_role AS ENUM (
+    'owner', 'manager', 'accountant', 'cashier',
+    'order_booker', 'driver', 'stock_keeper', 'auditor'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.current_user_role()
+RETURNS user_role
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT role FROM public.profiles WHERE id = auth.uid()
+$$;
+
 CREATE TABLE IF NOT EXISTS public.business_settings (
   id            INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   name_en       TEXT NOT NULL DEFAULT 'Nawaz Poultry',
