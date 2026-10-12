@@ -7,6 +7,26 @@
 -- 3. trip_pings: ensure RLS lets drivers insert and staff read live pings.
 -- ============================================================================
 
+-- Helper (also defined in 20261010000001_role_based_rls.sql): included here so
+-- this file runs standalone even if that migration was missed.
+DO $$ BEGIN
+  CREATE TYPE user_role AS ENUM (
+    'owner', 'manager', 'accountant', 'cashier',
+    'order_booker', 'driver', 'stock_keeper', 'auditor'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.current_user_role()
+RETURNS user_role
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT role FROM public.profiles WHERE id = auth.uid()
+$$;
+
 -- --------------------------------------------------------------------------
 -- 1. USER INVITES
 -- --------------------------------------------------------------------------
