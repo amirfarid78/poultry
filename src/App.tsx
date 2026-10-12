@@ -11,6 +11,7 @@ import {
   Purchase, 
   OrderItem, 
   Trip, 
+  Vehicle,
   InventoryItem, 
   Employee, 
   DayClosing, 
@@ -48,7 +49,8 @@ import { fetchPublicInvoice } from './lib/publicInvoice';
 
 // Supabase data + offline sync
 import { supabase } from './lib/supabase';
-import { fetchAll } from './lib/db';
+import { fetchAll, fetchStaffProfiles } from './lib/db';
+import type { StaffProfile } from './types';
 import { peekOutbox } from './lib/offline';
 import { startSyncEngine } from './lib/sync';
 import {
@@ -64,6 +66,16 @@ import type { EmployeeAdvance } from './lib/db';
 function AppShell() {
   const { session, profile, role, loading: authLoading, signOut } = useAuth();
   const [appState, setAppState] = useState<AppState>(loadSavedState);
+  const [staffProfiles, setStaffProfiles] = useState<StaffProfile[]>([]);
+
+  // Load staff profiles for owner/manager (vehicle driver assignment, user mgmt)
+  useEffect(() => {
+    if (role === 'owner' || role === 'manager') {
+      fetchStaffProfiles(supabase).then(setStaffProfiles).catch(() => {});
+    } else {
+      setStaffProfiles([]);
+    }
+  }, [role]);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
   const [receiptPreselectedPartyId, setReceiptPreselectedPartyId] = useState<string | undefined>();
@@ -554,6 +566,22 @@ function AppShell() {
     if (isUuid(orderId)) void persist('update', 'orders', { id: orderId, status });
   };
 
+  const handleUpdateOrder = (order: OrderItem) => {
+    setAppState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => o.id === order.id ? order : o)
+    }));
+    persistIfUuid('update', 'orders', order);
+  };
+
+  const handleDeleteOrder = (orderId: string) => {
+    setAppState((prev) => ({
+      ...prev,
+      orders: prev.orders.filter((o) => o.id !== orderId)
+    }));
+    if (isUuid(orderId)) void persist('delete', 'orders', { id: orderId });
+  };
+
   const handleConvertOrderToInvoice = (order: OrderItem) => {
     setOrderToInvoice(order);
     goToTab('pos');
@@ -626,6 +654,32 @@ function AppShell() {
       trips: prev.trips.map((t) => t.id === updatedTrip.id ? updatedTrip : t)
     }));
     persistIfUuid('update', 'trips', updatedTrip);
+  };
+
+  const handleAddVehicle = (vehicle: Vehicle) => {
+    vehicle = withUuid(vehicle);
+    setAppState((prev) => ({
+      ...prev,
+      vehicles: [...prev.vehicles, vehicle]
+    }));
+    void persist('insert', 'vehicles', vehicle);
+  };
+
+  const handleUpdateVehicle = (vehicle: Vehicle) => {
+    setAppState((prev) => ({
+      ...prev,
+      vehicles: prev.vehicles.map((v) => v.id === vehicle.id ? vehicle : v)
+    }));
+    persistIfUuid('update', 'vehicles', vehicle);
+  };
+
+  const handleAddTrip = (trip: Trip) => {
+    trip = withUuid(trip);
+    setAppState((prev) => ({
+      ...prev,
+      trips: [...prev.trips, trip]
+    }));
+    void persist('insert', 'trips', trip);
   };
 
   // 6. INVENTORY UPDATES
@@ -1023,9 +1077,14 @@ function AppShell() {
             orders={appState.orders}
             parties={appState.parties}
             vehicles={appState.vehicles}
+            staffProfiles={staffProfiles}
+            currentUserId={profile?.id ?? null}
+            currentUserName={profile?.fullName ?? null}
             currentRole={role}
             language={appState.language}
             onAddOrder={handleAddOrder}
+            onUpdateOrder={handleUpdateOrder}
+            onDeleteOrder={handleDeleteOrder}
             onUpdateOrderStatus={handleUpdateOrderStatus}
             onConvertOrderToInvoice={handleConvertOrderToInvoice}
           />
@@ -1035,8 +1094,14 @@ function AppShell() {
           <FleetView
             vehicles={appState.vehicles}
             trips={appState.trips}
+            orders={appState.orders}
+            staffProfiles={staffProfiles}
+            currentUserId={profile?.id ?? null}
             currentRole={role}
             language={appState.language}
+            onAddVehicle={handleAddVehicle}
+            onUpdateVehicle={handleUpdateVehicle}
+            onAddTrip={handleAddTrip}
             onUpdateTrip={handleUpdateTrip}
           />
         )}
