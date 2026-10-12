@@ -189,6 +189,30 @@ export interface Vehicle {
   driverId?: string;
   driverName?: string;
   isActive: boolean;
+  year?: number;
+  color?: string;
+  engineNumber?: string;
+  chassisNumber?: string;
+  insuranceExpiry?: string;
+  fitnessExpiry?: string;
+}
+
+export interface UserInvite {
+  id: string;
+  email: string;
+  role: UserRole;
+  invitedBy?: string;
+  createdAt: string;
+  acceptedAt?: string;
+}
+
+export interface StaffProfile {
+  id: string;
+  email: string;
+  fullName: string | null;
+  role: UserRole;
+  isActive: boolean;
+  createdAt: string;
 }
 
 export interface TripPing {
