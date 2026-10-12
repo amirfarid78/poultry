@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AppState } from '../../services/store';
 import { useAuth } from '../../context/AuthContext';
 import { useBusiness } from '../../context/BusinessContext';
+import { NAWAZ_LOGO_DATA_URL } from '../../assets/logo';
 import {
   downloadFullBackup,
   importBackupToOutbox,
@@ -160,7 +161,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         phone: bizPhone.trim(),
         address: bizAddress.trim(),
         city: bizCity.trim(),
-        logoUrl: bizLogoUrl || '/logo.png',
+        logoUrl: bizLogoUrl || NAWAZ_LOGO_DATA_URL,
       });
       setEditingBiz(false);
       showNotice(isUrdu ? 'کاروباری معلومات محفوظ ہو گئیں!' : 'Business profile saved!');
@@ -383,6 +384,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <span>{logoUploading ? (isUrdu ? 'اپلوڈ…' : 'Uploading…') : (isUrdu ? 'لوگو منتخب کریں' : 'Choose Logo')}</span>
                   <input type="file" accept="image/*" onChange={handleLogoFile} className="hidden" disabled={logoUploading} />
                 </label>
+                {bizLogoUrl && bizLogoUrl !== NAWAZ_LOGO_DATA_URL && (
+                  <button
+                    type="button"
+                    onClick={() => setBizLogoUrl(NAWAZ_LOGO_DATA_URL)}
+                    className="ml-2 text-[11px] font-bold text-amber-700 hover:text-amber-800 underline"
+                  >
+                    {isUrdu ? 'ڈیفالٹ لوگو بحال کریں' : 'Reset to default logo'}
+                  </button>
+                )}
               </div>
               <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
