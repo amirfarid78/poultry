@@ -12,7 +12,8 @@ import {
   formatPKR, 
   generateInvoiceWhatsAppUrl 
 } from '../../utils/calculations';
-import { generateInvoicePDF } from '../../utils/pdfGenerator';
+import { generateInvoicePDF, brandingFromSettings, loadLogoDataUrl } from '../../utils/pdfGenerator';
+import { useBusiness } from '../../context/BusinessContext';
 import { PartyModal } from '../common/PartyModal';
 import { 
   Plus, 
@@ -75,6 +76,7 @@ export const POSView: React.FC<POSViewProps> = ({
   onViewPublicInvoice
 }) => {
   const isUrdu = language === 'ur';
+  const { settings: biz } = useBusiness();
   const customers = parties.filter((p) => p.partyType === 'customer');
 
   // Form State
@@ -360,7 +362,8 @@ export const POSView: React.FC<POSViewProps> = ({
         previousBalance: selectedCustomer.currentBalance,
         newBalance: calc.newBalance,
         shareUrl,
-        lang: language
+        lang: language,
+        businessName: `${biz.nameUr} (${biz.nameEn})`
       });
       window.open(waUrl, '_blank');
     }
@@ -380,9 +383,10 @@ export const POSView: React.FC<POSViewProps> = ({
     }
   };
 
-  const handleDownloadPDF = (inv: Invoice) => {
+  const handleDownloadPDF = async (inv: Invoice) => {
     try {
-      const pdf = generateInvoicePDF(inv);
+      const logoDataUrl = await loadLogoDataUrl(biz.logoUrl);
+      const pdf = generateInvoicePDF(inv, brandingFromSettings(biz, logoDataUrl));
       pdf.save(`Invoice_${inv.invoiceNumber}_${inv.customerName.replace(/\s+/g, '_')}.pdf`);
     } catch (e) {
       console.error('Error generating PDF:', e);
@@ -398,7 +402,7 @@ export const POSView: React.FC<POSViewProps> = ({
       : `بقایا واجب الادا (Net Balance Payable): Rs ${inv.newBalance.toLocaleString()}`;
 
     const text = [
-      `*مرغ منڈی پولٹری - بل انوائس*`,
+      `*${biz.nameUr} - بل انوائس*`,
       `--------------------------------`,
       `*بل نمبر / Inv #:* ${inv.invoiceNumber}`,
       `*تاریخ / Date:* ${inv.invoiceDate}`,
@@ -415,7 +419,7 @@ export const POSView: React.FC<POSViewProps> = ({
       `*سابقہ بقایا / Prev Bal:* Rs ${inv.previousBalance.toLocaleString()}`,
       `*${balanceNote}*`,
       `--------------------------------`,
-      `شکریہ! Murgh Mandi Poultry Traders`
+      `شکریہ! ${biz.nameEn}`
     ].filter(Boolean).join('\n');
 
     navigator.clipboard.writeText(text);
@@ -444,7 +448,8 @@ export const POSView: React.FC<POSViewProps> = ({
       previousBalance: inv.previousBalance,
       newBalance: inv.newBalance,
       shareUrl,
-      lang: language
+      lang: language,
+      businessName: `${biz.nameUr} (${biz.nameEn})`
     });
     window.open(waUrl, '_blank');
   };
@@ -1304,10 +1309,17 @@ export const POSView: React.FC<POSViewProps> = ({
                 <div className="print-receipt-80mm w-[300px] bg-white p-4 shadow-sm border border-slate-300 rounded text-slate-900 font-mono text-[11px] leading-tight">
                   <div className="text-center border-b border-dashed border-slate-400 pb-2 mb-2">
                     <p className="font-urdu text-sm font-bold text-slate-800">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</p>
-                    <h2 className="text-sm font-black tracking-tight uppercase">MURGH MANDI POULTRY</h2>
-                    <p className="font-urdu text-xs font-semibold">مرغ منڈی پولٹری ٹریڈرز</p>
-                    <p className="text-[10px] text-slate-600">Wholesale Chicken & Khata</p>
-                    <p className="text-[10px] text-slate-600">Phone: 0300-1234567 | NTN: 8923412-1</p>
+                    <div className="flex justify-center my-1">
+                      <img src={biz.logoUrl} alt={biz.nameEn} className="h-14 object-contain" />
+                    </div>
+                    <h2 className="text-sm font-black tracking-tight uppercase text-amber-800">{biz.nameEn}</h2>
+                    {biz.nameUr && <p className="font-urdu text-xs font-semibold">{biz.nameUr}</p>}
+                    {biz.tagline && <p className="text-[10px] text-slate-600">{biz.tagline}</p>}
+                    {(biz.phone || biz.city) && (
+                      <p className="text-[10px] text-slate-600" dir="ltr">
+                        {[biz.phone, biz.city].filter(Boolean).join(' | ')}
+                      </p>
+                    )}
                   </div>
 
                   <div className="space-y-1 mb-2 text-[10px] border-b border-dashed border-slate-400 pb-2">
@@ -1395,12 +1407,19 @@ export const POSView: React.FC<POSViewProps> = ({
               ) : (
                 /* A4 / A5 Official Trade Bill Layout */
                 <div className="print-page-a4 w-full bg-white p-6 shadow-sm border border-slate-300 rounded text-slate-900 text-xs">
-                  <div className="border-b-2 border-emerald-800 pb-3 mb-3 flex justify-between items-start">
-                    <div>
-                      <h2 className="text-lg font-black text-emerald-800 uppercase tracking-tight">MURGH MANDI POULTRY TRADERS</h2>
-                      <p className="font-urdu text-sm font-bold text-slate-700">مرغ منڈی پولٹری اینڈ کھاتہ سسٹم</p>
-                      <p className="text-[10px] text-slate-500">Mandi Wholesale Broiler Chicken | Lahore, Pakistan</p>
-                      <p className="text-[10px] text-slate-500">Phone: 0300-1234567 | NTN: 8923412-1</p>
+                  <div className="border-b-2 border-amber-600 pb-3 mb-3 flex justify-between items-start">
+                    <div className="flex items-start gap-3">
+                      <img src={biz.logoUrl} alt={biz.nameEn} className="h-16 object-contain" />
+                      <div>
+                        <h2 className="text-lg font-black text-amber-800 uppercase tracking-tight">{biz.nameEn}</h2>
+                        {biz.nameUr && <p className="font-urdu text-sm font-bold text-slate-700">{biz.nameUr}</p>}
+                        {biz.tagline && <p className="text-[10px] text-slate-500">{biz.tagline}</p>}
+                        {(biz.phone || biz.city) && (
+                          <p className="text-[10px] text-slate-500" dir="ltr">
+                            {[biz.phone, biz.city].filter(Boolean).join(' | ')}
+                          </p>
+                        )}
+                      </div>
                     </div>
                     <div className="text-right">
                       <span className="text-xs font-mono font-bold bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded">
