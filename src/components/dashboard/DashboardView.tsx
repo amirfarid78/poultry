@@ -13,6 +13,7 @@ import {
   ExpenseItem 
 } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
+import { useBusiness } from '../../context/BusinessContext';
 import { 
   ResponsiveContainer, 
   ComposedChart,
@@ -92,6 +93,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenReceiptModal
 }) => {
   const isUrdu = language === 'ur';
+  const { settings: biz } = useBusiness();
   const [dateRange, setDateRange] = useState<'today' | 'week' | 'month'>('today');
   const [globalSearch, setGlobalSearch] = useState<string>('');
   const [activeReportTab, setActiveReportTab] = useState<'sales' | 'customers' | 'margin' | 'stock'>('sales');
@@ -861,6 +863,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             currentBalance: c.currentBalance,
                             totalDebit: c.currentBalance + 50000,
                             totalCredit: 50000,
+                            businessName: `${biz.nameUr} (${biz.nameEn})`,
                           });
                           window.open(url, '_blank');
                         }}
