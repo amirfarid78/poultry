@@ -121,7 +121,7 @@ export function generateInvoiceWhatsAppUrl(data: {
   lang?: 'en' | 'ur';
 }): string {
   const normPhone = normalizePakistanPhone(data.phone);
-  const bizName = data.businessName || 'مرغ منڈی پولٹری (Murgh Mandi)';
+  const bizName = data.businessName || 'نواز پولٹری (Nawaz Poultry)';
   const totRec = data.receivedCash + data.receivedAC;
   
   const balanceNote = data.newBalance < 0 
@@ -167,7 +167,7 @@ export function generateLedgerWhatsAppUrl(data: {
   shareUrl?: string;
 }): string {
   const normPhone = normalizePakistanPhone(data.phone);
-  const bizName = data.businessName || 'مرغ منڈی پولٹری (Murgh Mandi)';
+  const bizName = data.businessName || 'نواز پولٹری (Nawaz Poultry)';
   
   const balText = data.currentBalance < 0
     ? `آپ کی پیشگی جمع رقم (Advance Balance): Rs ${Math.abs(data.currentBalance).toLocaleString()}`
