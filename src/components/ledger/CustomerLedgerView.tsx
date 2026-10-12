@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Party, LedgerEntry } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
-import { generateLedgerPDF } from '../../utils/pdfGenerator';
+import { generateLedgerPDF, brandingFromSettings, loadLogoDataUrl } from '../../utils/pdfGenerator';
+import { useBusiness } from '../../context/BusinessContext';
 import { PartyModal } from '../common/PartyModal';
 import { 
   BookOpen, 
@@ -42,6 +43,7 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
   onUpdateParty
 }) => {
   const isUrdu = language === 'ur';
+  const { settings: biz } = useBusiness();
   const customers = parties.filter((p) => p.partyType === 'customer');
 
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '');
@@ -98,14 +100,15 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
       currentBalance: finalBalance,
       totalDebit,
       totalCredit,
-      shareUrl
+      shareUrl,
+      businessName: `${biz.nameUr} (${biz.nameEn})`
     });
     window.open(url, '_blank');
   };
 
   const handleCopyWhatsAppText = () => {
     if (!selectedCustomer) return;
-    const bizName = 'مرغ منڈی پولٹری (Murgh Mandi)';
+    const bizName = `${biz.nameUr} (${biz.nameEn})`;
     const balText = finalBalance < 0
       ? `پیشگی جمع رقم (Advance Balance with Us): Rs ${Math.abs(finalBalance).toLocaleString()}`
       : `کل واجب الادا بقایا (Net Balance Due): Rs ${finalBalance.toLocaleString()}`;
@@ -129,10 +132,11 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
     setTimeout(() => setCopiedNotice(false), 3000);
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     if (!selectedCustomer) return;
     try {
-      const doc = generateLedgerPDF(selectedCustomer, filteredEntries, startDate, endDate);
+      const logoDataUrl = await loadLogoDataUrl(biz.logoUrl);
+      const doc = generateLedgerPDF(selectedCustomer, filteredEntries, startDate, endDate, brandingFromSettings(biz, logoDataUrl));
       doc.save(`Ledger_${selectedCustomer.name.replace(/\s+/g, '_')}_${startDate}_${endDate}.pdf`);
     } catch (err) {
       console.error('PDF generation error:', err);
@@ -578,11 +582,18 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
             <div className="p-4 max-h-[65vh] overflow-y-auto bg-slate-100 flex justify-center">
               <div className="print-page-a4 w-full bg-white p-6 shadow-sm border border-slate-300 rounded text-slate-900 text-xs">
                 {/* Official header */}
-                <div className="border-b-2 border-emerald-800 pb-3 mb-4 text-center">
+                <div className="border-b-2 border-amber-600 pb-3 mb-4 text-center">
                   <p className="font-urdu text-sm font-bold text-slate-800">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</p>
-                  <h2 className="text-base font-black text-emerald-900 uppercase">MURGH MANDI POULTRY & KHATA SYSTEM</h2>
-                  <p className="font-urdu text-xs font-semibold text-slate-700">کھاتہ رجسٹر و مکمل اسٹیٹمنٹ</p>
-                  <p className="text-[10px] text-slate-500">Mandi Broiler Chicken Traders | Phone: 0300-1234567 | NTN: 8923412-1</p>
+                  <div className="flex justify-center my-1">
+                    <img src={biz.logoUrl} alt={biz.nameEn} className="h-14 object-contain" />
+                  </div>
+                  <h2 className="text-base font-black text-amber-800 uppercase">{biz.nameEn}</h2>
+                  {biz.nameUr && <p className="font-urdu text-xs font-semibold text-slate-700">{biz.nameUr} — کھاتہ رجسٹر و مکمل اسٹیٹمنٹ</p>}
+                  {(biz.phone || biz.city) && (
+                    <p className="text-[10px] text-slate-500" dir="ltr">
+                      {[biz.phone, biz.city].filter(Boolean).join(' | ')}
+                    </p>
+                  )}
                 </div>
 
                 {/* Customer Info Box */}
