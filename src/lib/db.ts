@@ -34,8 +34,8 @@ import type {
   GeneralJournalEntry,
   UserProfile,
   BusinessSettings,
-  resolveLogoUrl,
 } from '../types';
+import { resolveLogoUrl } from '../types';
 import type { AppState } from '../services/store';
 
 export type Db = SupabaseClient;
