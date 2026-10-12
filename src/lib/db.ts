@@ -34,6 +34,9 @@ import type {
   GeneralJournalEntry,
   UserProfile,
   BusinessSettings,
+  UserRole,
+  UserInvite,
+  StaffProfile,
 } from '../types';
 import { resolveLogoUrl } from '../types';
 import type { AppState } from '../services/store';
@@ -296,9 +299,15 @@ function mapVehicle(r: Row, latestDriver?: { driverId?: string; driverName?: str
     plateNumber: str(r.plate_number),
     model: str(r.model),
     capacityKg: num(r.capacity_kg),
-    driverId: latestDriver?.driverId,
-    driverName: latestDriver?.driverName,
+    driverId: str(r.driver_id) || latestDriver?.driverId,
+    driverName: str(r.driver_name) || latestDriver?.driverName,
     isActive: r.is_active !== false,
+    year: r.year ? num(r.year) : undefined,
+    color: str(r.color) || undefined,
+    engineNumber: str(r.engine_number) || undefined,
+    chassisNumber: str(r.chassis_number) || undefined,
+    insuranceExpiry: str(r.insurance_expiry) || undefined,
+    fitnessExpiry: str(r.fitness_expiry) || undefined,
   };
 }
 
@@ -627,6 +636,73 @@ export async function fetchTripPings(db: Db, tripId?: string, limit = 500): Prom
   const { data, error } = await q;
   if (error) throw error;
   return (data as Row[]).map((r) => ({ ...mapPing(r), id: num(r.id), tripId: str(r.trip_id) }));
+}
+
+// ---------------------------------------------------------------------------
+// USER MANAGEMENT (owner only) — invites + staff profiles + role assignment
+// ---------------------------------------------------------------------------
+
+export async function fetchStaffProfiles(db: Db): Promise<StaffProfile[]> {
+  const { data, error } = await db
+    .from('profiles')
+    .select('id, email, full_name, role, is_active, created_at')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data as Row[]).map((r) => ({
+    id: str(r.id),
+    email: str(r.email),
+    fullName: r.full_name ? str(r.full_name) : null,
+    role: str(r.role) as UserRole,
+    isActive: r.is_active !== false,
+    createdAt: str(r.created_at),
+  }));
+}
+
+export async function updateStaffRole(db: Db, profileId: string, role: UserRole): Promise<void> {
+  const { error } = await db.from('profiles').update({ role }).eq('id', profileId);
+  if (error) throw error;
+}
+
+export async function setStaffActive(db: Db, profileId: string, isActive: boolean): Promise<void> {
+  const { error } = await db.from('profiles').update({ is_active: isActive }).eq('id', profileId);
+  if (error) throw error;
+}
+
+export async function fetchUserInvites(db: Db): Promise<UserInvite[]> {
+  const { data, error } = await db
+    .from('user_invites')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data as Row[]).map((r) => ({
+    id: str(r.id),
+    email: str(r.email),
+    role: str(r.role) as UserRole,
+    invitedBy: r.invited_by ? str(r.invited_by) : undefined,
+    createdAt: str(r.created_at),
+    acceptedAt: r.accepted_at ? str(r.accepted_at) : undefined,
+  }));
+}
+
+export async function createUserInvite(db: Db, email: string, role: UserRole): Promise<UserInvite> {
+  const { data, error } = await db
+    .from('user_invites')
+    .upsert({ email: email.trim().toLowerCase(), role }, { onConflict: 'email' })
+    .select()
+    .single();
+  if (error) throw error;
+  const r = data as Row;
+  return {
+    id: str(r.id),
+    email: str(r.email),
+    role: str(r.role) as UserRole,
+    createdAt: str(r.created_at),
+  };
+}
+
+export async function deleteUserInvite(db: Db, inviteId: string): Promise<void> {
+  const { error } = await db.from('user_invites').delete().eq('id', inviteId);
+  if (error) throw error;
 }
 
 export async function fetchOrders(db: Db, limit = 1000): Promise<OrderItem[]> {
@@ -1075,6 +1151,14 @@ function rowVehicle(v: Vehicle): Row {
     model: v.model,
     capacity_kg: optNum(v.capacityKg),
     is_active: v.isActive,
+    driver_id: v.driverId || null,
+    driver_name: v.driverName || null,
+    year: v.year || null,
+    color: v.color || null,
+    engine_number: v.engineNumber || null,
+    chassis_number: v.chassisNumber || null,
+    insurance_expiry: v.insuranceExpiry || null,
+    fitness_expiry: v.fitnessExpiry || null,
   };
 }
 
