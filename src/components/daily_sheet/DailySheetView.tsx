@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Party, ReceiptVoucher, Invoice, UserRole } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
+import { useBusiness } from '../../context/BusinessContext';
 import { 
   FileSpreadsheet, 
   Printer, 
@@ -38,6 +39,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
   onOpenReceiptModal
 }) => {
   const isUrdu = language === 'ur';
+  const { settings: biz } = useBusiness();
   const todayStr = new Date().toISOString().split('T')[0];
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [selectedRoute, setSelectedRoute] = useState<string>('all');
@@ -564,7 +566,8 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
                       asOfDate: selectedDate,
                       currentBalance: c.currentBalance,
                       totalDebit: c.currentBalance,
-                      totalCredit: 0
+                      totalCredit: 0,
+                      businessName: `${biz.nameUr} (${biz.nameEn})`
                     })}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -610,7 +613,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
                 بِسْمِ اللَّـهِ الرَّحْمَـٰنِ الرَّحِيمِ
               </span>
               <h1 className="text-2xl font-black text-slate-900 tracking-wide">
-                مرغ منڈی ہول سیل و سپلائی (پاکستان)
+                {biz.nameUr} {biz.nameEn}
               </h1>
               <h2 className="text-base font-bold text-slate-700 font-urdu mt-0.5">
                 روزانہ فیلڈ اگرائی و وصولی شیٹ (Daily Ugrahi & Recovery Statement)
