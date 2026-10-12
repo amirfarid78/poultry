@@ -1,5 +1,7 @@
 // Types for Nawaz Poultry ERP
 
+import { NAWAZ_LOGO_DATA_URL } from './assets/logo';
+
 export interface BusinessSettings {
   id: number;
   nameEn: string;
@@ -20,9 +22,16 @@ export const DEFAULT_BUSINESS_SETTINGS: BusinessSettings = {
   phone: '',
   address: '',
   city: 'Lahore',
-  logoUrl: '/logo.png',
+  logoUrl: NAWAZ_LOGO_DATA_URL,
   updatedAt: new Date().toISOString(),
 };
+
+/** Resolve a stored logo_url to a usable URL. '/logo.png' (legacy DB default)
+ *  maps to the bundled Nawaz logo so old rows still render correctly. */
+export function resolveLogoUrl(stored: string | null | undefined): string {
+  if (!stored || stored === '/logo.png') return NAWAZ_LOGO_DATA_URL;
+  return stored;
+}
 
 export type UserRole = 
   | 'owner'
