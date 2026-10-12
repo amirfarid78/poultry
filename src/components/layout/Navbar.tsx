@@ -3,6 +3,7 @@ import { UserRole } from '../../types';
 import { VIEW_PERMISSIONS } from '../../lib/permissions';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 import SyncBadge from '../common/SyncBadge';
+import { useBusiness } from '../../context/BusinessContext';
 import { 
   LayoutDashboard,
   ShoppingCart, 
@@ -54,6 +55,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [showMandiModal, setShowMandiModal] = useState(false);
   const [tempRate, setTempRate] = useState(todayMandiRate.toString());
   const isUrdu = language === 'ur';
+  const { settings: biz } = useBusiness();
 
   const roleLabels: Record<UserRole, { labelEn: string; labelUr: string }> = {
     owner: { labelEn: 'Owner / Admin (مالک)', labelUr: 'مالک / ایڈمن' },
@@ -103,17 +105,17 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
         {/* Brand */}
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center p-1 shadow-inner">
-            <img src="/icon.svg" alt="Poultry Logo" className="w-8 h-8 object-contain drop-shadow" />
+          <div className="w-10 h-10 rounded-xl bg-white border border-amber-300/50 flex items-center justify-center p-0.5 shadow-inner overflow-hidden">
+            <img src={biz.logoUrl} alt={biz.nameEn} className="w-9 h-9 object-contain" />
           </div>
           <div>
             <div className="flex items-center gap-2">
               <span className="font-extrabold text-base sm:text-lg tracking-tight text-white flex items-center gap-1.5">
-                Murgh Mandi
-                <span className="font-urdu text-emerald-400 text-sm font-semibold">مرغ منڈی</span>
+                {biz.nameEn}
+                {biz.nameUr && <span className="font-urdu text-amber-300 text-sm font-semibold">{biz.nameUr}</span>}
               </span>
-              <span className="text-[10px] bg-emerald-700/80 uppercase tracking-widest text-emerald-100 px-1.5 py-0.5 rounded font-mono">
-                Pakistan ERP
+              <span className="text-[10px] bg-amber-600/80 uppercase tracking-widest text-amber-50 px-1.5 py-0.5 rounded font-mono">
+                {isUrdu ? 'پاکستان' : 'Pakistan ERP'}
               </span>
             </div>
             <p className="text-[11px] text-emerald-200/80 hidden sm:block">

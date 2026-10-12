@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { LogIn, Mail, Lock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 
 interface LoginProps {
   onSwitchToSignup: () => void;
@@ -15,16 +16,17 @@ export const AuthShell: React.FC<{
   children: React.ReactNode;
 }> = ({ language, setLanguage, title, subtitle, children }) => {
   const isUrdu = language === 'ur';
+  const { settings: biz } = useBusiness();
   return (
     <div className="min-h-screen bg-slate-100/90 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Brand */}
         <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-900 shadow-lg p-2 mb-3">
-            <img src="/icon.svg" alt="Murgh Mandi" className="w-12 h-12 object-contain" />
+          <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-white border border-amber-200 shadow-lg p-1.5 mb-3 overflow-hidden">
+            <img src={biz.logoUrl} alt={biz.nameEn} className="w-full h-full object-contain" />
           </div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
-            Murgh Mandi <span className="font-urdu text-emerald-700">مرغ منڈی</span>
+            {biz.nameEn} <span className="font-urdu text-amber-700">{biz.nameUr}</span>
           </h1>
           <p className="text-xs text-slate-500 mt-1">
             {isUrdu ? 'پاکستان پولٹری سیلز ای آر پی' : 'Pakistan Poultry Sales ERP'}

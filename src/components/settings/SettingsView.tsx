@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AppState } from '../../services/store';
 import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 import {
   downloadFullBackup,
   importBackupToOutbox,
@@ -31,8 +32,44 @@ import {
   Smartphone,
   HardDrive,
   AlertTriangle,
-  Trash2
+  Trash2,
+  Building2,
+  Pencil,
+  ImagePlus,
+  Phone,
+  MapPin
 } from 'lucide-react';
+
+/** Resize an uploaded image to a max dimension and return a PNG data URL. */
+function fileToResizedDataUrl(file: File, maxDim = 800): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Canvas not supported'));
+          return;
+        }
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = () => reject(new Error('Invalid image file'));
+      img.src = reader.result as string;
+    };
+    reader.onerror = () => reject(new Error('Could not read file'));
+    reader.readAsDataURL(file);
+  });
+}
 
 interface SettingsViewProps {
   appState: AppState;
@@ -61,6 +98,76 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [notice, setNotice] = useState<string | null>(null);
   const [noticeError, setNoticeError] = useState(false);
   const { role } = useAuth();
+  const { settings: biz, save: saveBiz, saving: savingBiz } = useBusiness();
+  const isOwner = role === 'owner';
+
+  // Business profile editor state
+  const [editingBiz, setEditingBiz] = useState(false);
+  const [bizNameEn, setBizNameEn] = useState('');
+  const [bizNameUr, setBizNameUr] = useState('');
+  const [bizTagline, setBizTagline] = useState('');
+  const [bizPhone, setBizPhone] = useState('');
+  const [bizAddress, setBizAddress] = useState('');
+  const [bizCity, setBizCity] = useState('');
+  const [bizLogoUrl, setBizLogoUrl] = useState('');
+  const [logoUploading, setLogoUploading] = useState(false);
+
+  const startEditingBiz = () => {
+    setBizNameEn(biz.nameEn);
+    setBizNameUr(biz.nameUr);
+    setBizTagline(biz.tagline);
+    setBizPhone(biz.phone);
+    setBizAddress(biz.address);
+    setBizCity(biz.city);
+    setBizLogoUrl(biz.logoUrl);
+    setEditingBiz(true);
+  };
+
+  const handleLogoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showNotice(isUrdu ? 'صرف تصویری فائل منتخب کریں' : 'Please choose an image file', true);
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      showNotice(isUrdu ? 'لوگو 5MB سے چھوٹا ہونا چاہیے' : 'Logo must be under 5MB', true);
+      return;
+    }
+    setLogoUploading(true);
+    try {
+      const dataUrl = await fileToResizedDataUrl(file, 800);
+      setBizLogoUrl(dataUrl);
+    } catch (err: any) {
+      showNotice(isUrdu ? `لوگو اپلوڈ ناکام: ${err?.message}` : `Logo upload failed: ${err?.message}`, true);
+    } finally {
+      setLogoUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleSaveBiz = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bizNameEn.trim()) {
+      showNotice(isUrdu ? 'کاروبار کا انگریزی نام ضروری ہے' : 'Business name (English) is required', true);
+      return;
+    }
+    try {
+      await saveBiz({
+        nameEn: bizNameEn.trim(),
+        nameUr: bizNameUr.trim(),
+        tagline: bizTagline.trim(),
+        phone: bizPhone.trim(),
+        address: bizAddress.trim(),
+        city: bizCity.trim(),
+        logoUrl: bizLogoUrl || '/logo.png',
+      });
+      setEditingBiz(false);
+      showNotice(isUrdu ? 'کاروباری معلومات محفوظ ہو گئیں!' : 'Business profile saved!');
+    } catch (err: any) {
+      showNotice(isUrdu ? `محفوظ کرنے میں ناکامی: ${err?.message}` : `Save failed: ${err?.message}`, true);
+    }
+  };
 
   // Danger zone state (owner only)
   const [deleteConfirm, setDeleteConfirm] = useState('');
@@ -71,8 +178,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   // Quick Setup Wizard State
   const [showQuickSetupModal, setShowQuickSetupModal] = useState(false);
-  const [wizardShopNameUrdu, setWizardShopNameUrdu] = useState('مرغ منڈی پولٹری سیلز');
-  const [wizardShopNameEn, setWizardShopNameEn] = useState('Murgh Mandi Poultry Sales');
+  const [wizardShopNameUrdu, setWizardShopNameUrdu] = useState('نواز پولٹری سیلز');
+  const [wizardShopNameEn, setWizardShopNameEn] = useState('Nawaz Poultry Sales');
   const [wizardOwnerName, setWizardOwnerName] = useState('حاجی محمد اکرم');
   const [wizardCity, setWizardCity] = useState('Lahore');
   const [wizardCash, setWizardCash] = useState<number>(100000);
@@ -199,6 +306,180 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <span>{notice}</span>
         </div>
       )}
+
+      {/* BUSINESS PROFILE */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b pb-3">
+          <div className="flex items-center gap-2">
+            <Building2 className="w-5 h-5 text-amber-600" />
+            <div>
+              <h3 className="text-sm font-extrabold text-slate-900">
+                {isUrdu ? 'کاروباری پروفائل' : 'Business Profile'}
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                {isUrdu
+                  ? 'یہ نام، لوگو اور رابطہ بل، رسید اور واٹس ایپ پیغامات پر نظر آئے گا'
+                  : 'Name, logo & contact shown on invoices, receipts and WhatsApp shares'}
+              </p>
+            </div>
+          </div>
+          {isOwner && !editingBiz && (
+            <button
+              onClick={startEditingBiz}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 transition shadow-sm"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              <span>{isUrdu ? 'تبدیل کریں' : 'Edit'}</span>
+            </button>
+          )}
+        </div>
+
+        {!editingBiz ? (
+          <div className="flex flex-col sm:flex-row items-start gap-5">
+            <div className="w-28 h-28 rounded-2xl border border-slate-200 bg-white flex items-center justify-center overflow-hidden shrink-0 shadow-sm">
+              <img src={biz.logoUrl} alt={biz.nameEn} className="w-full h-full object-contain p-1" />
+            </div>
+            <div className="space-y-1.5 text-sm">
+              <h4 className="text-lg font-black text-slate-900">{biz.nameEn}</h4>
+              {biz.nameUr && <p className="font-urdu text-base text-slate-700">{biz.nameUr}</p>}
+              {biz.tagline && <p className="text-xs text-amber-700 font-semibold tracking-wide">{biz.tagline}</p>}
+              <div className="pt-1 space-y-1 text-xs text-slate-600">
+                {biz.phone && (
+                  <p className="flex items-center gap-1.5">
+                    <Phone className="w-3.5 h-3.5 text-slate-400" />
+                    <span className="font-mono font-bold" dir="ltr">{biz.phone}</span>
+                  </p>
+                )}
+                {(biz.address || biz.city) && (
+                  <p className="flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{[biz.address, biz.city].filter(Boolean).join(', ')}</span>
+                  </p>
+                )}
+              </div>
+              {!isOwner && (
+                <p className="text-[10px] text-slate-400 pt-1">
+                  {isUrdu ? 'صرف مالک (owner) یہ معلومات تبدیل کر سکتا ہے' : 'Only the owner can edit this'}
+                </p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSaveBiz} className="space-y-4 text-xs">
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div className="shrink-0">
+                <label className="block font-bold text-slate-700 mb-1">
+                  {isUrdu ? 'کاروباری لوگو:' : 'Business Logo:'}
+                </label>
+                <div className="w-28 h-28 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 flex items-center justify-center overflow-hidden">
+                  {bizLogoUrl ? (
+                    <img src={bizLogoUrl} alt="logo preview" className="w-full h-full object-contain p-1" />
+                  ) : (
+                    <ImagePlus className="w-8 h-8 text-slate-300" />
+                  )}
+                </div>
+                <label className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold cursor-pointer transition">
+                  <ImagePlus className="w-3.5 h-3.5" />
+                  <span>{logoUploading ? (isUrdu ? 'اپلوڈ…' : 'Uploading…') : (isUrdu ? 'لوگو منتخب کریں' : 'Choose Logo')}</span>
+                  <input type="file" accept="image/*" onChange={handleLogoFile} className="hidden" disabled={logoUploading} />
+                </label>
+              </div>
+              <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'کاروبار کا نام (انگریزی):' : 'Business Name (English):'}
+                  </label>
+                  <input
+                    type="text"
+                    value={bizNameEn}
+                    onChange={(e) => setBizNameEn(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold text-slate-900"
+                    placeholder="Nawaz Poultry"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'کاروبار کا نام (اردو):' : 'Business Name (Urdu):'}
+                  </label>
+                  <input
+                    type="text"
+                    value={bizNameUr}
+                    onChange={(e) => setBizNameUr(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-urdu font-bold text-slate-900"
+                    placeholder="نواز پولٹری"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'ٹیگ لائن:' : 'Tagline:'}
+                  </label>
+                  <input
+                    type="text"
+                    value={bizTagline}
+                    onChange={(e) => setBizTagline(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-medium text-slate-900"
+                    placeholder="Since 1995"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'فون نمبر:' : 'Phone Number:'}
+                  </label>
+                  <input
+                    type="text"
+                    value={bizPhone}
+                    onChange={(e) => setBizPhone(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-slate-900"
+                    placeholder="0300-1234567"
+                    dir="ltr"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'پتہ:' : 'Address:'}
+                  </label>
+                  <input
+                    type="text"
+                    value={bizAddress}
+                    onChange={(e) => setBizAddress(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-medium text-slate-900"
+                    placeholder={isUrdu ? 'دکان نمبر، بازار، علاقہ' : 'Shop #, Market, Area'}
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'شہر:' : 'City:'}
+                  </label>
+                  <input
+                    type="text"
+                    value={bizCity}
+                    onChange={(e) => setBizCity(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-medium text-slate-900"
+                    placeholder="Lahore"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t">
+              <button
+                type="button"
+                onClick={() => setEditingBiz(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                {isUrdu ? 'منسوخ' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={savingBiz}
+                className="px-5 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded-xl shadow-md transition"
+              >
+                {savingBiz ? (isUrdu ? 'محفوظ ہو رہا ہے…' : 'Saving…') : (isUrdu ? 'محفوظ کریں' : 'Save Changes')}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
 
       {/* SECTION 1: ONE-CLICK QUICK ACTIONS */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
