@@ -11,6 +11,7 @@ import { persist, withUuid } from './remote';
 import { clearOutbox } from './offline';
 import type { OutboxTable } from './db';
 import type { AppState } from '../services/store';
+import { createBlankState } from '../services/store';
 import { exportFullBackupJSON } from '../utils/exportImport';
 
 /** AppState collection key -> server table for outbox upserts. */
@@ -153,7 +154,19 @@ export async function cleanAllDataAndResetLocal(): Promise<void> {
     /* ignore */
   }
   try {
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    // Save an explicit BLANK state (not seed data) so the reload starts empty.
+    // Preserve the user's language preference.
+    let lang: 'en' | 'ur' = 'ur';
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.language === 'en' || parsed.language === 'ur') lang = parsed.language;
+      }
+    } catch { /* ignore */ }
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(createBlankState(lang)));
+    // Also clear the business-settings cache so it refetches fresh.
+    localStorage.removeItem('nawaz_poultry_business_settings_v1');
   } catch {
     /* ignore */
   }
