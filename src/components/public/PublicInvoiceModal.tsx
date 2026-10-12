@@ -1,6 +1,7 @@
 import React from 'react';
 import { Invoice } from '../../types';
 import { formatPKR, generateInvoiceWhatsAppUrl } from '../../utils/calculations';
+import { useBusiness } from '../../context/BusinessContext';
 import { Printer, Share2, X, CheckCircle, ShieldCheck } from 'lucide-react';
 
 interface PublicInvoiceModalProps {
@@ -16,6 +17,7 @@ export const PublicInvoiceModal: React.FC<PublicInvoiceModalProps> = ({
 }) => {
   if (!invoice) return null;
   const isUrdu = language === 'ur';
+  const { settings: biz } = useBusiness();
 
   const handlePrintThermal = () => {
     window.print();
@@ -26,7 +28,7 @@ export const PublicInvoiceModal: React.FC<PublicInvoiceModalProps> = ({
     if (navigator.share) {
       try {
         await navigator.share({
-          title: `Murgh Mandi Bill - ${invoice.invoiceNumber}`,
+          title: `${biz.nameEn} Bill - ${invoice.invoiceNumber}`,
           text: `Chicken Invoice ${invoice.invoiceNumber} for ${invoice.customerUrduName || invoice.customerName}`,
           url: shareUrl
         });
@@ -73,11 +75,18 @@ export const PublicInvoiceModal: React.FC<PublicInvoiceModalProps> = ({
         <div className="print-receipt-80mm text-center font-sans space-y-3">
           {/* Header */}
           <div className="border-b-2 border-dashed border-slate-300 pb-3">
+            <div className="flex justify-center mb-1.5">
+              <img src={biz.logoUrl} alt={biz.nameEn} className="h-16 object-contain" />
+            </div>
             <h2 className="text-xl font-black text-slate-900 tracking-tight">
-              مرغ منڈی پولٹری
+              {biz.nameUr}
             </h2>
-            <p className="text-xs font-semibold text-slate-600">Murgh Mandi Chicken Supply</p>
-            <p className="text-[10px] text-slate-500">لاہور، پاکستان | 0300-1234567</p>
+            <p className="text-xs font-semibold text-amber-700">{biz.nameEn}{biz.tagline ? ` — ${biz.tagline}` : ''}</p>
+            {(biz.phone || biz.city) && (
+              <p className="text-[10px] text-slate-500" dir="ltr">
+                {[biz.city ? `${biz.city}, Pakistan` : '', biz.phone].filter(Boolean).join(' | ')}
+              </p>
+            )}
           </div>
 
           {/* Invoice Info */}
