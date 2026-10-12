@@ -82,8 +82,8 @@ export const POSView: React.FC<POSViewProps> = ({
   // Form State
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '');
   const [invoiceDate, setInvoiceDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [mandiRate, setMandiRate] = useState<number>(todayMandiRate || 12000);
-  const [saleRate, setSaleRate] = useState<number>(todayMandiRate ? todayMandiRate + 200 : 12200);
+  const [mandiRate, setMandiRate] = useState<number>(todayMandiRate ?? 0);
+  const [saleRate, setSaleRate] = useState<number>(todayMandiRate > 0 ? todayMandiRate + 200 : 0);
   const [weightKg, setWeightKg] = useState<number>(customers[0]?.defaultKilo || 80);
   const [shrinkageKg, setShrinkageKg] = useState<number>(0);
   const [birdCount, setBirdCount] = useState<number>(40);
