@@ -257,8 +257,9 @@ export const PartyModal: React.FC<PartyModalProps> = ({
             </div>
           </div>
 
-          {/* Opening Balance */}
-          {!initialParty && (
+          {/* Opening Balance — editable on create AND edit (edits shift the
+              whole khata chain by the delta, handled in handleUpdateParty) */}
+          {
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
               <div className="flex items-center justify-between">
                 <label className="font-bold text-slate-700 flex items-center gap-1">
@@ -298,12 +299,16 @@ export const PartyModal: React.FC<PartyModalProps> = ({
                 />
               </div>
               <p className="text-[10px] text-slate-500">
-                {isUrdu 
-                  ? 'اگر گاہک نے پہلے سے ادھار دینا ہے تو "بقایا لینا ہے" رکھیں، اگر ایڈوانس پیسے جمع ہیں تو "پیشگی جمع ہے" رکھیں۔' 
-                  : 'Positive if customer owes money, negative advance if party deposited funds.'}
+                {initialParty
+                  ? (isUrdu
+                    ? 'تبدیلی پورے کھاتے کے بقایوں میں خودکار ایڈجسٹ ہوگی۔'
+                    : 'Changing this auto-adjusts the whole khata chain by the difference.')
+                  : (isUrdu
+                    ? 'اگر گاہک نے پہلے سے ادھار دینا ہے تو "بقایا لینا ہے" رکھیں، اگر ایڈوانس پیسے جمع ہیں تو "پیشگی جمع ہے" رکھیں۔'
+                    : 'Positive if customer owes money, negative advance if party deposited funds.')}
               </p>
             </div>
-          )}
+          }
 
           {/* Credit Limit & Default Lot */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
