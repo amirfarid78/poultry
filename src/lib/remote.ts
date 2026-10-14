@@ -60,6 +60,10 @@ const TABLE_STATE_KEY: Record<string, keyof AppState> = {
   chart_of_accounts: 'accounts',
   employees: 'employees',
   journal_entries: 'generalEntries',
+  // Void pseudo-tables map back to their document collections so pending
+  // voids keep the optimistic local state until the server replays them.
+  invoice_voids: 'invoices',
+  receipt_voids: 'receipts',
 };
 
 function pendingIdsByTable(pending: OutboxEntry[]): Record<string, Set<string>> {
