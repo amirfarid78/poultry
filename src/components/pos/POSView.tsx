@@ -43,7 +43,9 @@ import {
   Copy,
   Check,
   Sparkles,
-  Volume2
+  Volume2,
+  Edit3,
+  Trash2
 } from 'lucide-react';
 
 interface POSViewProps {
@@ -57,6 +59,8 @@ interface POSViewProps {
   onClearPrefillOrder?: () => void;
   onAddParty?: (party: Party) => void;
   onSaveInvoice: (invoice: Invoice, linkedOrderId?: string) => void;
+  onUpdateInvoice?: (oldInvoice: Invoice, updated: Invoice) => void;
+  onDeleteInvoice?: (invoiceId: string) => void;
   onOpenReceiptModal: () => void;
   onViewPublicInvoice: (invoice: Invoice) => void;
 }
@@ -72,12 +76,17 @@ export const POSView: React.FC<POSViewProps> = ({
   onClearPrefillOrder,
   onAddParty,
   onSaveInvoice,
+  onUpdateInvoice,
+  onDeleteInvoice,
   onOpenReceiptModal,
   onViewPublicInvoice
 }) => {
   const isUrdu = language === 'ur';
   const { settings: biz } = useBusiness();
   const customers = parties.filter((p) => p.partyType === 'customer');
+  // Voided sales stay in state for audit but never show in the working lists.
+  const liveInvoices = invoices.filter((i) => !i.isVoid);
+  const canModifySales = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
 
   // Form State
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '');
@@ -95,6 +104,41 @@ export const POSView: React.FC<POSViewProps> = ({
   const [notes, setNotes] = useState<string>('');
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
   const [isAddPartyModalOpen, setIsAddPartyModalOpen] = useState(false);
+  // Sale being edited (void + reissue flow). Null = creating a new sale.
+  const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
+
+  const resetSaleForm = () => {
+    setSelectedCustomerId(customers[0]?.id || '');
+    setInvoiceDate(new Date().toISOString().split('T')[0]);
+    setMandiRate(todayMandiRate ?? 0);
+    setSaleRate(todayMandiRate > 0 ? todayMandiRate + 200 : 0);
+    setWeightKg(customers[0]?.defaultKilo || 80);
+    setShrinkageKg(0);
+    setBirdCount(40);
+    setReceivedCash(0);
+    setReceivedAC(0);
+    setAcRefNo('');
+    setNotes('');
+    setEditingInvoice(null);
+  };
+
+  const startEditInvoice = (inv: Invoice) => {
+    setEditingInvoice(inv);
+    setSelectedCustomerId(inv.customerId);
+    setInvoiceDate(inv.invoiceDate);
+    setMandiRate(inv.mandiRatePer40kg);
+    setSaleRate(inv.saleRatePer40kg);
+    setWeightKg(inv.grossWeightKg);
+    setShrinkageKg(inv.shrinkageKg);
+    setBirdCount(inv.birdCount);
+    setReceivedCash(inv.receivedCash);
+    setReceivedAC(inv.receivedAC);
+    setAcPaymentMode(inv.acPaymentMode);
+    setAcRefNo(inv.acRefNo || '');
+    setSelectedVehicleId(inv.vehicleId || '');
+    setNotes(inv.notes || '');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   // Pre-fill when converting an order into invoice
   useEffect(() => {
@@ -334,6 +378,32 @@ export const POSView: React.FC<POSViewProps> = ({
     const newInvoice = createInvoiceObject();
     if (!newInvoice) return null;
 
+    // EDIT MODE: void the old invoice and issue the corrected one.
+    if (editingInvoice && onUpdateInvoice) {
+      // The form totals were computed against the live balance, which still
+      // includes the old invoice — back its net effect out first.
+      const oldTotRec = (editingInvoice.receivedCash || 0) + (editingInvoice.receivedAC || 0);
+      const oldNet = editingInvoice.totalAmount - oldTotRec;
+      const prevBal = (selectedCustomer?.currentBalance || 0) - oldNet;
+      const newTotRec = (newInvoice.receivedCash || 0) + (newInvoice.receivedAC || 0);
+      const updated: Invoice = {
+        ...newInvoice,
+        previousBalance: prevBal,
+        newBalance: prevBal + newInvoice.totalAmount - newTotRec,
+      };
+      const old = editingInvoice;
+      onUpdateInvoice(old, updated);
+      setSaveSuccessNotice(
+        isUrdu
+          ? `بل ${old.invoiceNumber} وائڈ کر کے نیا بل ${updated.invoiceNumber} جاری کر دیا گیا!`
+          : `Invoice ${old.invoiceNumber} voided — corrected invoice ${updated.invoiceNumber} issued!`
+      );
+      setTimeout(() => setSaveSuccessNotice(null), 5000);
+      resetSaleForm();
+      if (onClearPrefillOrder) onClearPrefillOrder();
+      return updated;
+    }
+
     onSaveInvoice(newInvoice, prefillOrder?.id);
     if (onClearPrefillOrder) {
       onClearPrefillOrder();
@@ -549,10 +619,35 @@ export const POSView: React.FC<POSViewProps> = ({
             className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md transition"
           >
             <Save className="w-4 h-4 text-slate-300" />
-            <span>{isUrdu ? 'محفوظ کریں (Ctrl+S)' : 'Save (Ctrl+S)'}</span>
+            <span>
+              {editingInvoice
+                ? (isUrdu ? 'ترمیم محفوظ کریں' : 'Save Changes')
+                : (isUrdu ? 'محفوظ کریں (Ctrl+S)' : 'Save (Ctrl+S)')}
+            </span>
           </button>
+          {editingInvoice && (
+            <button
+              onClick={resetSaleForm}
+              className="flex items-center gap-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 px-3 py-2 rounded-xl text-xs font-bold transition"
+            >
+              <X className="w-4 h-4" />
+              <span>{isUrdu ? 'ترمیم منسوخ کریں' : 'Cancel Edit'}</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {/* EDIT MODE BANNER */}
+      {editingInvoice && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl px-4 py-2.5 flex items-center gap-2 text-xs font-bold text-amber-900">
+          <Edit3 className="w-4 h-4 shrink-0" />
+          <span>
+            {isUrdu
+              ? `بل ${editingInvoice.invoiceNumber} میں ترمیم ہو رہی ہے — محفوظ کرتے ہی پرانا بل وائڈ ہو کر نیا درست بل جاری ہو جائے گا۔`
+              : `Editing invoice ${editingInvoice.invoiceNumber} — saving will void it and issue the corrected invoice.`}
+          </span>
+        </div>
+      )}
 
       {/* QUICK VOICE DICTATION SAMPLE CHIPS & PROMPTS */}
       <div className="bg-purple-50/70 p-3 rounded-2xl border border-purple-200 flex flex-wrap items-center justify-between gap-2.5">
@@ -1149,7 +1244,11 @@ export const POSView: React.FC<POSViewProps> = ({
                 className="w-full py-2.5 px-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition"
               >
                 <Save className="w-3.5 h-3.5" />
-                <span>{isUrdu ? 'صرف محفوظ کریں' : 'Save (Ctrl+S)'}</span>
+                <span>
+                  {editingInvoice
+                    ? (isUrdu ? 'ترمیم محفوظ کریں' : 'Save Changes')
+                    : (isUrdu ? 'صرف محفوظ کریں' : 'Save (Ctrl+S)')}
+                </span>
               </button>
             </div>
           </div>
@@ -1164,7 +1263,7 @@ export const POSView: React.FC<POSViewProps> = ({
             <span>{isUrdu ? 'حالیہ جاری کردہ انوائسز (Recent Invoices)' : 'Recent Invoices'}</span>
           </h3>
           <span className="text-xs text-slate-500">
-            {invoices.length} {isUrdu ? 'بل کل' : 'total'}
+            {liveInvoices.length} {isUrdu ? 'بل کل' : 'total'}
           </span>
         </div>
 
@@ -1184,7 +1283,7 @@ export const POSView: React.FC<POSViewProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {invoices.slice().reverse().map((inv) => {
+              {liveInvoices.slice().reverse().map((inv) => {
                 const totRec = (inv.receivedCash || 0) + (inv.receivedAC || 0);
                 const cust = parties.find((p) => p.id === inv.customerId);
                 return (
@@ -1244,6 +1343,35 @@ export const POSView: React.FC<POSViewProps> = ({
                         >
                           <Eye className="w-3.5 h-3.5" />
                         </button>
+
+                        {/* Edit Sale (void + reissue) */}
+                        {canModifySales && onUpdateInvoice && (
+                          <button
+                            onClick={() => startEditInvoice(inv)}
+                            className="p-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 transition"
+                            title={isUrdu ? 'بل میں ترمیم' : 'Edit Sale'}
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
+                        {/* Delete (Void) Sale */}
+                        {canModifySales && onDeleteInvoice && (
+                          <button
+                            onClick={() => {
+                              const ok = window.confirm(
+                                isUrdu
+                                  ? `کیا واقعی بل ${inv.invoiceNumber} حذف (وائڈ) کرنا ہے؟ کھاتے سے اس کا اثر واپس ہو جائے گا۔`
+                                  : `Void invoice ${inv.invoiceNumber}? Its effect on the khata will be reversed.`
+                              );
+                              if (ok) onDeleteInvoice(inv.id);
+                            }}
+                            className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 transition"
+                            title={isUrdu ? 'بل حذف کریں' : 'Delete (Void) Sale'}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
