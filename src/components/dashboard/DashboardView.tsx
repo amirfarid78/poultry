@@ -117,9 +117,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const todaySalesKg = dayClosing.totalSalesKg ?? 0;
   const todayCollections = dayClosing.totalCollections ?? 0;
 
+  // Voided sales are audit history only — excluded from every stat below.
+  const liveInvoices = invoices.filter((i) => !i.isVoid);
+
   // Mandi Margin Spread
-  const avgSaleRate = invoices.length > 0 
-    ? Math.round(invoices.reduce((s, i) => s + i.saleRatePer40kg, 0) / invoices.length) 
+  const avgSaleRate = liveInvoices.length > 0 
+    ? Math.round(liveInvoices.reduce((s, i) => s + i.saleRatePer40kg, 0) / liveInvoices.length) 
     : 0;
   const mandiMarginSpread = avgSaleRate - todayMandiRate;
   const estimatedProfitToday = Math.round((todaySalesKg * mandiMarginSpread) / 40);
@@ -142,7 +145,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Sales & volume trend computed from REAL invoices. Empty days show zero —
   // no demo data is ever injected.
   const salesTrendData = last7DayKeys.map((dateStr, i) => {
-    const dayInvoices = invoices.filter((inv) => inv.invoiceDate === dateStr);
+    const dayInvoices = liveInvoices.filter((inv) => inv.invoiceDate === dateStr);
     const salesRs = dayInvoices.reduce((s, inv) => s + (inv.totalAmount || 0), 0);
     const weightKg = dayInvoices.reduce((s, inv) => s + (inv.netWeightKg || 0), 0);
     const saleRate = dayInvoices.length > 0
@@ -160,7 +163,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Daily Profit Trend computed from REAL invoices + expenses.
   // Gross gain per invoice ≈ (saleRate − mandiRate) × kg ÷ 40.
   const dailyProfitTrendData = last7DayKeys.map((dateStr, i) => {
-    const dayInvoices = invoices.filter((inv) => inv.invoiceDate === dateStr);
+    const dayInvoices = liveInvoices.filter((inv) => inv.invoiceDate === dateStr);
     const dayExpenses = (expenses ?? []).filter((e) => e.date === dateStr);
     const operatingExpenses = dayExpenses.reduce((s, e) => s + (e.amount || 0), 0);
     const grossGain = dayInvoices.reduce((s, inv) => {
@@ -914,7 +917,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 if (activeReportTab === 'sales') {
                   handleExportCSV(
                     'Daily_Sales_Report',
-                    invoices.map(i => [i.invoiceNumber, i.invoiceDate, `"${i.customerName}"`, i.netWeightKg, i.saleRatePer40kg, i.totalAmount, i.receivedCash + i.receivedAC, i.newBalance]),
+                    liveInvoices.map(i => [i.invoiceNumber, i.invoiceDate, `"${i.customerName}"`, i.netWeightKg, i.saleRatePer40kg, i.totalAmount, i.receivedCash + i.receivedAC, i.newBalance]),
                     ['Invoice #', 'Date', 'Customer', 'Net Kg', 'Rate/40kg', 'Total PKR', 'Paid PKR', 'Balance PKR']
                   );
                 } else {
@@ -951,7 +954,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {invoices.map((inv) => (
+                  {liveInvoices.map((inv) => (
                     <tr key={inv.id} className="hover:bg-slate-50">
                       <td className="p-3 font-mono font-bold text-slate-900">{inv.invoiceNumber}</td>
                       <td className="p-3 text-slate-600">{inv.invoiceDate}</td>
