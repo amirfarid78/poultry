@@ -25,7 +25,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
 
   const [partyId, setPartyId] = useState<string>(preselectedPartyId || parties[0]?.id || '');
   const [receiptDate, setReceiptDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [amount, setAmount] = useState<number>(20000); // 20000 like in reference sheet
+  const [amount, setAmount] = useState<number>(0); // blank — user types the actual received amount
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('cash');
   const [bankName, setBankName] = useState<string>('Meezan Bank');
   const [refNo, setRefNo] = useState<string>('');
@@ -135,7 +135,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                   value={amount || ''}
                   onChange={(e) => setAmount(parseFloat(e.target.value) || 0)}
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 font-mono text-sm font-bold text-slate-900"
-                  placeholder="20000"
+                  placeholder="0"
                   required
                 />
               </div>
