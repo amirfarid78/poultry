@@ -237,20 +237,304 @@ function AppShell() {
   };
 
   const handleUpdateParty = (updatedParty: Party) => {
-    setAppState((prev) => ({
-      ...prev,
-      parties: prev.parties.map((p) => (p.id === updatedParty.id ? updatedParty : p))
-    }));
+    setAppState((prev) => {
+      const old = prev.parties.find((p) => p.id === updatedParty.id);
+      // Opening-balance edits must flow into the khata: shift the running
+      // balances of every entry for this party by the delta so the chain
+      // stays truthful, and refresh the opening entry itself.
+      const delta = old ? updatedParty.openingBalance - old.openingBalance : 0;
+      const mergedParty: Party = old
+        ? { ...updatedParty, currentBalance: old.currentBalance + delta }
+        : updatedParty;
+
+      let ledgerEntries = prev.ledgerEntries;
+      if (delta !== 0) {
+        const openingIdx = ledgerEntries.findIndex(
+          (l) => l.partyId === mergedParty.id && l.refType === 'opening'
+        );
+        const shifted = ledgerEntries.map((l) =>
+          l.partyId === mergedParty.id
+            ? { ...l, runningBalance: l.runningBalance + delta }
+            : l
+        );
+        if (openingIdx >= 0) {
+          const o = shifted[openingIdx];
+          const ob = mergedParty.openingBalance;
+          shifted[openingIdx] = {
+            ...o,
+            debit: ob > 0 ? ob : 0,
+            credit: ob < 0 ? Math.abs(ob) : 0,
+            detail: `Opening Balance (${ob > 0 ? 'Receivable' : ob < 0 ? 'Advance with Us' : 'Nil'})`,
+            detailUrdu: `ابتدائی سابقہ بیلنس (${ob > 0 ? 'واجب الوصول بقایا' : ob < 0 ? 'پیشگی جمع رقم' : 'صفر'})`,
+          };
+          ledgerEntries = shifted;
+        } else if (mergedParty.openingBalance !== 0) {
+          const ob = mergedParty.openingBalance;
+          ledgerEntries = [
+            ...shifted,
+            {
+              id: `led-open-${Date.now()}`,
+              partyId: mergedParty.id,
+              partyType: mergedParty.partyType,
+              entryDate: (mergedParty.createdAt || new Date().toISOString()).split('T')[0],
+              detail: `Opening Balance (${ob > 0 ? 'Receivable' : 'Advance with Us'})`,
+              detailUrdu: `ابتدائی سابقہ بیلنس (${ob > 0 ? 'واجب الوصول بقایا' : 'پیشگی جمع رقم'})`,
+              folioNo: 'OP-01',
+              debit: ob > 0 ? ob : 0,
+              credit: ob < 0 ? Math.abs(ob) : 0,
+              runningBalance: ob,
+              refType: 'opening',
+              createdAt: new Date().toISOString(),
+            },
+          ];
+        } else {
+          ledgerEntries = shifted;
+        }
+      }
+
+      return {
+        ...prev,
+        parties: prev.parties.map((p) => (p.id === mergedParty.id ? mergedParty : p)),
+        ledgerEntries,
+      };
+    });
     persistIfUuid('update', 'parties', updatedParty);
   };
 
   const handleDeleteParty = (partyId: string) => {
+    const s = stateRef.current;
+    const party = s.parties.find((p) => p.id === partyId);
+    if (!party) return false;
+    // Accounting safety: never delete a party that has documents. The user
+    // must void those first — the DB foreign keys would reject it anyway.
+    const hasDocs =
+      s.invoices.some((i) => i.customerId === partyId && !i.isVoid) ||
+      s.receipts.some((r) => r.partyId === partyId && !r.isVoid) ||
+      s.purchases.some((p) => p.supplierId === partyId) ||
+      s.orders.some((o) => o.customerId === partyId && o.status !== 'cancelled');
+    if (hasDocs) {
+      alert(
+        s.language === 'ur'
+          ? `”${party.urduName || party.name}“ کے کھاتے میں لین دین موجود ہے۔ پہلے ان کی انوائسز/رسیدیں وائڈ کریں، پھر کھاتہ حذف کریں۔`
+          : `"${party.name}" has transactions on record. Void its invoices/receipts first, then delete the account.`
+      );
+      return false;
+    }
     setAppState((prev) => ({
       ...prev,
       parties: prev.parties.filter((p) => p.id !== partyId),
-      ledgerEntries: prev.ledgerEntries.filter((l) => l.partyId !== partyId)
+      ledgerEntries: prev.ledgerEntries.filter((l) => l.partyId !== partyId),
     }));
     if (isUuid(partyId)) void persist('delete', 'parties', { id: partyId });
+    return true;
+  };
+
+  // ---- Invoice state helpers (pure) ---------------------------------------
+  // applyInvoiceToState: post a new invoice's effects (party balance, ledger,
+  // cash, stock, linked order). reverseInvoiceForVoid: undo them for a void —
+  // marks the invoice void, posts local reversal rows, restores balance/stock.
+  const applyInvoiceToState = (prev: AppState, invoice: Invoice, linkedOrderId?: string): AppState => {
+    // 1. Update customer balance
+    const updatedParties = prev.parties.map((p) => {
+      if (p.id === invoice.customerId) {
+        return {
+          ...p,
+          currentBalance: invoice.newBalance
+        };
+      }
+      return p;
+    });
+
+    // 2. Insert debit ledger entry for sale
+    const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
+    const intermediateBal = invoice.previousBalance + invoice.totalAmount;
+
+    const saleLedgerEntry: LedgerEntry = {
+      id: `led-${Date.now()}-1`,
+      partyId: invoice.customerId,
+      partyType: 'customer',
+      entryDate: invoice.invoiceDate,
+      detail: `Sale: ${invoice.netWeightKg} kg @ Rs ${invoice.saleRatePer40kg.toLocaleString()}/40kg`,
+      detailUrdu: `مرغ فروخت: ${invoice.netWeightKg} کلو، ریٹ ${invoice.saleRatePer40kg.toLocaleString()}`,
+      folioNo: invoice.invoiceNumber,
+      debit: invoice.totalAmount,
+      credit: 0,
+      runningBalance: intermediateBal,
+      refType: 'invoice',
+      refId: invoice.id,
+      mandiRate: invoice.mandiRatePer40kg,
+      rate: invoice.saleRatePer40kg,
+      weightKg: invoice.netWeightKg,
+      createdAt: new Date().toISOString()
+    };
+
+    const newLedgerEntries = [...prev.ledgerEntries, saleLedgerEntry];
+
+    // 3. Insert credit ledger entry if payment received
+    if (totRec > 0) {
+      const paymentLedgerEntry: LedgerEntry = {
+        id: `led-${Date.now()}-2`,
+        partyId: invoice.customerId,
+        partyType: 'customer',
+        entryDate: invoice.invoiceDate,
+        detail: `Payment Recd (Cash: ${invoice.receivedCash}, AC: ${invoice.receivedAC})`,
+        detailUrdu: `وصولی نقد: ${invoice.receivedCash}، آن لائن: ${invoice.receivedAC}`,
+        folioNo: invoice.invoiceNumber,
+        debit: 0,
+        credit: totRec,
+        runningBalance: invoice.newBalance,
+        refType: 'invoice_payment',
+        refId: invoice.id,
+        createdAt: new Date().toISOString()
+      };
+      newLedgerEntries.push(paymentLedgerEntry);
+    }
+
+    // 4. Update Day Closing metrics
+    const updatedDayClosing: DayClosing = {
+      ...prev.dayClosing,
+      systemCash: prev.dayClosing.systemCash + invoice.receivedCash,
+      physicalCash: prev.dayClosing.physicalCash + invoice.receivedCash,
+      totalSalesKg: prev.dayClosing.totalSalesKg + invoice.netWeightKg,
+      totalSalesAmount: prev.dayClosing.totalSalesAmount + invoice.totalAmount,
+      totalCollections: prev.dayClosing.totalCollections + totRec
+    };
+
+    // 5. Deduct from Live Broiler Inventory (inv-item-1)
+    const updatedInventory = prev.inventory.map((inv) => {
+      if (inv.category === 'broiler' && (inv.id === 'inv-item-1' || inv.code === 'BR-LIVE')) {
+        return {
+          ...inv,
+          currentWeightKg: Math.max(0, inv.currentWeightKg - invoice.netWeightKg),
+          currentCount: Math.max(0, (inv.currentCount || 0) - (invoice.birdCount || Math.round(invoice.netWeightKg / 2)))
+        };
+      }
+      return inv;
+    });
+
+    // 6. Update orders if linked
+    const updatedOrders = prev.orders.map((ord) => {
+      if (linkedOrderId && ord.id === linkedOrderId) {
+        return { ...ord, status: 'invoiced' as any };
+      }
+      return ord;
+    });
+
+    return {
+      ...prev,
+      parties: updatedParties,
+      invoices: [...prev.invoices, invoice],
+      ledgerEntries: newLedgerEntries,
+      dayClosing: updatedDayClosing,
+      inventory: updatedInventory,
+      orders: updatedOrders
+    };
+  };
+
+  const reverseInvoiceForVoid = (prev: AppState, invoice: Invoice, reason: string): AppState => {
+    if (invoice.isVoid) return prev;
+    const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
+    const net = invoice.totalAmount - totRec;
+    const now = new Date().toISOString();
+    const todayStr = now.split('T')[0];
+
+    const party = prev.parties.find((p) => p.id === invoice.customerId);
+    const curBal = party?.currentBalance ?? invoice.newBalance;
+    const newBal = curBal - net;
+
+    // Reversal rows, newest-first (payment reversal, then sale reversal),
+    // mirroring the server void_invoice() function.
+    const reversals: LedgerEntry[] = [];
+    if (totRec > 0) {
+      reversals.push({
+        id: `led-void-${Date.now()}-p`,
+        partyId: invoice.customerId,
+        partyType: 'customer',
+        entryDate: todayStr,
+        detail: `VOID reversal (${reason}): payment ${invoice.invoiceNumber}`,
+        detailUrdu: `وائڈ واپسی (${reason}): وصولی ${invoice.invoiceNumber}`,
+        folioNo: invoice.invoiceNumber,
+        debit: totRec,
+        credit: 0,
+        runningBalance: curBal + totRec,
+        refType: 'invoice_payment',
+        refId: invoice.id,
+        createdAt: now,
+      });
+    }
+    reversals.push({
+      id: `led-void-${Date.now()}-s`,
+      partyId: invoice.customerId,
+      partyType: 'customer',
+      entryDate: todayStr,
+      detail: `VOID reversal (${reason}): sale ${invoice.invoiceNumber}`,
+      detailUrdu: `وائڈ واپسی (${reason}): فروخت ${invoice.invoiceNumber}`,
+      folioNo: invoice.invoiceNumber,
+      debit: 0,
+      credit: invoice.totalAmount,
+      runningBalance: newBal,
+      refType: 'invoice',
+      refId: invoice.id,
+      mandiRate: invoice.mandiRatePer40kg,
+      rate: invoice.saleRatePer40kg,
+      weightKg: invoice.netWeightKg,
+      createdAt: now,
+    });
+
+    const updatedParties = prev.parties.map((p) =>
+      p.id === invoice.customerId ? { ...p, currentBalance: newBal } : p
+    );
+
+    const updatedDayClosing: DayClosing = {
+      ...prev.dayClosing,
+      systemCash: Math.max(0, prev.dayClosing.systemCash - invoice.receivedCash),
+      physicalCash: Math.max(0, prev.dayClosing.physicalCash - invoice.receivedCash),
+      totalSalesKg: Math.max(0, prev.dayClosing.totalSalesKg - invoice.netWeightKg),
+      totalSalesAmount: Math.max(0, prev.dayClosing.totalSalesAmount - invoice.totalAmount),
+      totalCollections: Math.max(0, prev.dayClosing.totalCollections - totRec),
+    };
+
+    const updatedInventory = prev.inventory.map((inv) => {
+      if (inv.category === 'broiler' && (inv.id === 'inv-item-1' || inv.code === 'BR-LIVE')) {
+        return {
+          ...inv,
+          currentWeightKg: inv.currentWeightKg + invoice.netWeightKg,
+          currentCount: (inv.currentCount || 0) + (invoice.birdCount || Math.round(invoice.netWeightKg / 2)),
+        };
+      }
+      return inv;
+    });
+
+    return {
+      ...prev,
+      parties: updatedParties,
+      invoices: prev.invoices.map((i) =>
+        i.id === invoice.id ? { ...i, isVoid: true, voidReason: reason } : i
+      ),
+      ledgerEntries: [...prev.ledgerEntries, ...reversals],
+      dayClosing: updatedDayClosing,
+      inventory: updatedInventory,
+    };
+  };
+
+  const persistInvoiceStock = (invoice: Invoice, sign: 1 | -1) => {
+    const broiler = stateRef.current.inventory.find(
+      (i) => i.category === 'broiler' && (i.id === 'inv-item-1' || i.code === 'BR-LIVE')
+    );
+    if (broiler) {
+      void persist('upsert', 'products', {
+        ...broiler,
+        currentWeightKg: Math.max(
+          0,
+          broiler.currentWeightKg + sign * invoice.netWeightKg
+        ),
+        currentCount: Math.max(
+          0,
+          (broiler.currentCount || 0) +
+            sign * (invoice.birdCount || Math.round(invoice.netWeightKg / 2))
+        ),
+      });
+    }
   };
 
   // 1. SAVE INVOICE & AUTO-UPDATE LEDGERS, INVENTORY & ORDERS ATOMICALLY
@@ -259,123 +543,58 @@ function AppShell() {
   // back on the next refresh — see reconcileState).
   const handleSaveInvoice = (invoice: Invoice, linkedOrderId?: string) => {
     invoice = withUuid(invoice);
-    setAppState((prev) => {
-      // 1. Update customer balance
-      const updatedParties = prev.parties.map((p) => {
-        if (p.id === invoice.customerId) {
-          return {
-            ...p,
-            currentBalance: invoice.newBalance
-          };
-        }
-        return p;
-      });
-
-      // 2. Insert debit ledger entry for sale
-      const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
-      const intermediateBal = invoice.previousBalance + invoice.totalAmount;
-
-      const saleLedgerEntry: LedgerEntry = {
-        id: `led-${Date.now()}-1`,
-        partyId: invoice.customerId,
-        partyType: 'customer',
-        entryDate: invoice.invoiceDate,
-        detail: `Sale: ${invoice.netWeightKg} kg @ Rs ${invoice.saleRatePer40kg.toLocaleString()}/40kg`,
-        detailUrdu: `مرغ فروخت: ${invoice.netWeightKg} کلو، ریٹ ${invoice.saleRatePer40kg.toLocaleString()}`,
-        folioNo: invoice.invoiceNumber,
-        debit: invoice.totalAmount,
-        credit: 0,
-        runningBalance: intermediateBal,
-        refType: 'invoice',
-        refId: invoice.id,
-        mandiRate: invoice.mandiRatePer40kg,
-        rate: invoice.saleRatePer40kg,
-        weightKg: invoice.netWeightKg,
-        createdAt: new Date().toISOString()
-      };
-
-      const newLedgerEntries = [...prev.ledgerEntries, saleLedgerEntry];
-
-      // 3. Insert credit ledger entry if payment received
-      if (totRec > 0) {
-        const paymentLedgerEntry: LedgerEntry = {
-          id: `led-${Date.now()}-2`,
-          partyId: invoice.customerId,
-          partyType: 'customer',
-          entryDate: invoice.invoiceDate,
-          detail: `Payment Recd (Cash: ${invoice.receivedCash}, AC: ${invoice.receivedAC})`,
-          detailUrdu: `وصولی نقد: ${invoice.receivedCash}، آن لائن: ${invoice.receivedAC}`,
-          folioNo: invoice.invoiceNumber,
-          debit: 0,
-          credit: totRec,
-          runningBalance: invoice.newBalance,
-          refType: 'invoice_payment',
-          refId: invoice.id,
-          createdAt: new Date().toISOString()
-        };
-        newLedgerEntries.push(paymentLedgerEntry);
-      }
-
-      // 4. Update Day Closing metrics
-      const updatedDayClosing: DayClosing = {
-        ...prev.dayClosing,
-        systemCash: prev.dayClosing.systemCash + invoice.receivedCash,
-        physicalCash: prev.dayClosing.physicalCash + invoice.receivedCash,
-        totalSalesKg: prev.dayClosing.totalSalesKg + invoice.netWeightKg,
-        totalSalesAmount: prev.dayClosing.totalSalesAmount + invoice.totalAmount,
-        totalCollections: prev.dayClosing.totalCollections + totRec
-      };
-
-      // 5. Deduct from Live Broiler Inventory (inv-item-1)
-      const updatedInventory = prev.inventory.map((inv) => {
-        if (inv.category === 'broiler' && (inv.id === 'inv-item-1' || inv.code === 'BR-LIVE')) {
-          return {
-            ...inv,
-            currentWeightKg: Math.max(0, inv.currentWeightKg - invoice.netWeightKg),
-            currentCount: Math.max(0, (inv.currentCount || 0) - (invoice.birdCount || Math.round(invoice.netWeightKg / 2)))
-          };
-        }
-        return inv;
-      });
-
-      // 6. Update orders if linked
-      const updatedOrders = prev.orders.map((ord) => {
-        if (linkedOrderId && ord.id === linkedOrderId) {
-          return { ...ord, status: 'invoiced' as any };
-        }
-        return ord;
-      });
-
-      return {
-        ...prev,
-        parties: updatedParties,
-        invoices: [...prev.invoices, invoice],
-        ledgerEntries: newLedgerEntries,
-        dayClosing: updatedDayClosing,
-        inventory: updatedInventory,
-        orders: updatedOrders
-      };
-    });
+    setAppState((prev) => applyInvoiceToState(prev, invoice, linkedOrderId));
     void persist('insert', 'invoices', invoice);
     if (linkedOrderId && isUuid(linkedOrderId)) {
       void persist('update', 'orders', { id: linkedOrderId, status: 'invoiced' });
     }
     // Broiler stock movement -> products (upsert by code)
-    const broiler = stateRef.current.inventory.find(
+    persistInvoiceStock(invoice, -1);
+    setOrderToInvoice(null);
+  };
+
+  // 1b. DELETE (VOID) A SALE INVOICE — posts reversal rows, restores the
+  // party balance and stock, and marks the invoice void (never hard-deleted,
+  // so the audit trail stays intact).
+  const handleDeleteInvoice = (invoiceId: string, reason?: string) => {
+    const s = stateRef.current;
+    const invoice = s.invoices.find((i) => i.id === invoiceId);
+    if (!invoice || invoice.isVoid) return;
+    const voidReason = reason || (s.language === 'ur' ? 'صارف نے حذف کیا' : 'Deleted by user');
+    setAppState((prev) => reverseInvoiceForVoid(prev, invoice, voidReason));
+    // Void FIRST so the outbox replays it before anything that follows.
+    void persist('insert', 'invoice_voids', { id: invoiceId, invoiceId, reason: voidReason });
+    persistInvoiceStock(invoice, 1);
+  };
+
+  // 1c. EDIT A SALE = void the old invoice + issue the corrected one.
+  const handleUpdateInvoice = (oldInvoice: Invoice, updatedInvoice: Invoice) => {
+    const s = stateRef.current;
+    const current = s.invoices.find((i) => i.id === oldInvoice.id);
+    if (!current || current.isVoid) return;
+    const voidReason =
+      s.language === 'ur'
+        ? `ترمیم — نیا بل ${updatedInvoice.invoiceNumber}`
+        : `Edited — reissued as ${updatedInvoice.invoiceNumber}`;
+    const fresh = withUuid(updatedInvoice);
+    setAppState((prev) => applyInvoiceToState(reverseInvoiceForVoid(prev, current, voidReason), fresh));
+    void persist('insert', 'invoice_voids', { id: current.id, invoiceId: current.id, reason: voidReason });
+    void persist('insert', 'invoices', fresh);
+    // Single stock upsert: restore the old sale's stock, deduct the new one.
+    const broiler = s.inventory.find(
       (i) => i.category === 'broiler' && (i.id === 'inv-item-1' || i.code === 'BR-LIVE')
     );
     if (broiler) {
+      const wDelta = current.netWeightKg - fresh.netWeightKg;
+      const cDelta =
+        (current.birdCount || Math.round(current.netWeightKg / 2)) -
+        (fresh.birdCount || Math.round(fresh.netWeightKg / 2));
       void persist('upsert', 'products', {
         ...broiler,
-        currentWeightKg: Math.max(0, broiler.currentWeightKg - invoice.netWeightKg),
-        currentCount: Math.max(
-          0,
-          (broiler.currentCount || 0) -
-            (invoice.birdCount || Math.round(invoice.netWeightKg / 2))
-        ),
+        currentWeightKg: Math.max(0, broiler.currentWeightKg + wDelta),
+        currentCount: Math.max(0, (broiler.currentCount || 0) + cDelta),
       });
     }
-    setOrderToInvoice(null);
   };
 
   // 2. SAVE PAYMENT-ONLY RECEIPT VOUCHER
@@ -428,6 +647,65 @@ function AppShell() {
       };
     });
     void persist('insert', 'receipts', receipt);
+  };
+
+  // 2b. DELETE (VOID) A PAYMENT VOUCHER — mirrors void_receipt(): marks the
+  // voucher void, posts a reversal row and adds the amount back to the party
+  // balance. Never hard-deleted; the audit trail stays intact.
+  const handleDeleteReceipt = (receiptId: string, reason?: string) => {
+    const s = stateRef.current;
+    const receipt = s.receipts.find((r) => r.id === receiptId);
+    if (!receipt || receipt.isVoid) return;
+    const voidReason = reason || (s.language === 'ur' ? 'صارف نے حذف کیا' : 'Deleted by user');
+    const now = new Date().toISOString();
+    setAppState((prev) => {
+      const party = prev.parties.find((p) => p.id === receipt.partyId);
+      const curBal = party?.currentBalance ?? receipt.newBalance;
+      const newBal = curBal + receipt.amount;
+
+      const reversal: LedgerEntry = {
+        id: `led-void-rec-${Date.now()}`,
+        partyId: receipt.partyId,
+        partyType: receipt.partyType,
+        entryDate: now.split('T')[0],
+        detail: `VOID reversal (${voidReason}): payment ${receipt.receiptNumber}`,
+        detailUrdu: `وائڈ واپسی (${voidReason}): ادائیگی ${receipt.receiptNumber}`,
+        folioNo: receipt.receiptNumber,
+        debit: receipt.partyType === 'customer' ? receipt.amount : 0,
+        credit: receipt.partyType === 'supplier' ? receipt.amount : 0,
+        runningBalance: newBal,
+        refType: 'receipt',
+        refId: receipt.id,
+        createdAt: now,
+      };
+
+      const updatedParties = prev.parties.map((p) =>
+        p.id === receipt.partyId ? { ...p, currentBalance: newBal } : p
+      );
+
+      const isCash = receipt.paymentMode === 'cash';
+      const cashDelta = receipt.partyType === 'supplier' ? -receipt.amount : receipt.amount;
+      const updatedDayClosing: DayClosing = {
+        ...prev.dayClosing,
+        systemCash: isCash ? Math.max(0, prev.dayClosing.systemCash - cashDelta) : prev.dayClosing.systemCash,
+        physicalCash: isCash ? Math.max(0, prev.dayClosing.physicalCash - cashDelta) : prev.dayClosing.physicalCash,
+        totalCollections:
+          receipt.partyType === 'customer'
+            ? Math.max(0, prev.dayClosing.totalCollections - receipt.amount)
+            : prev.dayClosing.totalCollections,
+      };
+
+      return {
+        ...prev,
+        parties: updatedParties,
+        receipts: prev.receipts.map((r) =>
+          r.id === receipt.id ? { ...r, isVoid: true, voidReason } : r
+        ),
+        ledgerEntries: [...prev.ledgerEntries, reversal],
+        dayClosing: updatedDayClosing,
+      };
+    });
+    void persist('insert', 'receipt_voids', { id: receiptId, receiptId, reason: voidReason });
   };
 
   // 3. SAVE SUPPLIER PURCHASE & UPDATE INVENTORY & CASH
@@ -694,6 +972,25 @@ function AppShell() {
   const handleUpdateEmployees = (emps: Employee[]) => {
     setAppState((prev) => ({ ...prev, employees: emps }));
     for (const e of emps) persistIfUuid('upsert', 'employees', e);
+  };
+
+  const handleDeleteEmployee = (empId: string) => {
+    const s = stateRef.current;
+    const emp = s.employees.find((e) => e.id === empId);
+    if (!emp) return;
+    if ((emp.advanceBalance || 0) !== 0) {
+      alert(
+        s.language === 'ur'
+          ? `”${emp.urduName || emp.name}“ کے ذمے پیشگی رقم بقایا ہے (Rs ${(emp.advanceBalance || 0).toLocaleString()})۔ پہلے اسے کلیئر کریں۔`
+          : `"${emp.name}" still has an outstanding advance of Rs ${(emp.advanceBalance || 0).toLocaleString()}. Clear it first.`
+      );
+      return;
+    }
+    setAppState((prev) => ({
+      ...prev,
+      employees: prev.employees.filter((e) => e.id !== empId),
+    }));
+    if (isUuid(empId)) void persist('delete', 'employees', { id: empId });
   };
 
   // 8. DAY CLOSING UPDATE
@@ -993,6 +1290,8 @@ function AppShell() {
             onClearPrefillOrder={() => setOrderToInvoice(null)}
             onAddParty={handleAddParty}
             onSaveInvoice={handleSaveInvoice}
+            onUpdateInvoice={handleUpdateInvoice}
+            onDeleteInvoice={handleDeleteInvoice}
             onOpenReceiptModal={() => setIsReceiptModalOpen(true)}
             onViewPublicInvoice={(inv) => setPublicViewingInvoice(inv)}
           />
@@ -1013,6 +1312,7 @@ function AppShell() {
           <CustomerLedgerView
             parties={appState.parties}
             ledgerEntries={appState.ledgerEntries}
+            invoices={appState.invoices}
             language={appState.language}
             onOpenReceiptModal={(partyId) => {
               setReceiptPreselectedPartyId(partyId);
@@ -1020,6 +1320,7 @@ function AppShell() {
             }}
             onAddParty={handleAddParty}
             onUpdateParty={handleUpdateParty}
+            onDeleteParty={handleDeleteParty}
           />
         )}
 
@@ -1034,6 +1335,7 @@ function AppShell() {
               setReceiptPreselectedPartyId(partyId);
               setIsReceiptModalOpen(true);
             }}
+            onDeleteReceipt={handleDeleteReceipt}
           />
         )}
 
@@ -1069,6 +1371,7 @@ function AppShell() {
             }}
             onAddParty={handleAddParty}
             onUpdateParty={handleUpdateParty}
+            onDeleteParty={handleDeleteParty}
           />
         )}
 
@@ -1139,6 +1442,7 @@ function AppShell() {
             currentRole={role}
             language={appState.language}
             onUpdateEmployees={handleUpdateEmployees}
+            onDeleteEmployee={handleDeleteEmployee}
             onIssueAdvance={handleIssueEmployeeAdvance}
           />
         )}
