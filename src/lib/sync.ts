@@ -64,6 +64,29 @@ const isDuplicateKey = (e: unknown): boolean =>
 async function replayOne(db: SupabaseClient, entry: OutboxEntry): Promise<void> {
   const table = entry.table as OutboxTable;
 
+  // Void pseudo-tables: route to the SECURITY DEFINER void RPCs (they own
+  // the ledger reversals; the client never writes ledger_entries directly).
+  if (table === 'invoice_voids' || table === 'receipt_voids') {
+    const p = entry.payload as { invoiceId?: string; receiptId?: string; reason?: string };
+    const reason = typeof p.reason === 'string' && p.reason ? p.reason : 'Voided by user';
+    if (table === 'invoice_voids') {
+      if (!p.invoiceId) return;
+      const { error } = await db.rpc('void_invoice', {
+        p_invoice_id: p.invoiceId,
+        p_reason: reason,
+      });
+      if (error) throw error;
+      return;
+    }
+    if (!p.receiptId) return;
+    const { error } = await db.rpc('void_receipt', {
+      p_receipt_id: p.receiptId,
+      p_reason: reason,
+    });
+    if (error) throw error;
+    return;
+  }
+
   // journal_entries needs account-code resolution + line inserts; a
   // duplicate-key failure means "already synced" -> drop the entry.
   if (table === 'journal_entries') {
