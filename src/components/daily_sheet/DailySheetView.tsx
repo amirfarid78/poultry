@@ -18,7 +18,8 @@ import {
   Building2, 
   ArrowUpRight,
   Send,
-  Filter
+  Filter,
+  Trash2
 } from 'lucide-react';
 
 interface DailySheetViewProps {
@@ -28,6 +29,7 @@ interface DailySheetViewProps {
   currentRole: UserRole;
   language: 'en' | 'ur';
   onOpenReceiptModal: (partyId?: string) => void;
+  onDeleteReceipt?: (receiptId: string) => void;
 }
 
 export const DailySheetView: React.FC<DailySheetViewProps> = ({
@@ -36,10 +38,12 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
   invoices,
   currentRole,
   language,
-  onOpenReceiptModal
+  onOpenReceiptModal,
+  onDeleteReceipt
 }) => {
   const isUrdu = language === 'ur';
   const { settings: biz } = useBusiness();
+  const canVoidReceipt = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
   const todayStr = new Date().toISOString().split('T')[0];
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [selectedRoute, setSelectedRoute] = useState<string>('all');
@@ -79,8 +83,8 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
 
     const list: RecoveryItem[] = [];
 
-    // Receipts for selected date
-    receipts.filter(r => r.receiptDate === selectedDate && r.partyType === 'customer').forEach((r) => {
+    // Receipts for selected date (voided vouchers are excluded)
+    receipts.filter(r => r.receiptDate === selectedDate && r.partyType === 'customer' && !r.isVoid).forEach((r) => {
       const party = customerMap.get(r.partyId);
       list.push({
         id: r.id,
@@ -433,12 +437,15 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
                   <th className="p-3 text-right">{isUrdu ? 'باقی بقایا' : 'Remaining'}</th>
                   <th className="p-3">{isUrdu ? 'وصول کنندہ' : 'Collected By'}</th>
                   <th className="p-3">{isUrdu ? 'نوٹ / تفصیل' : 'Notes'}</th>
+                  {canVoidReceipt && onDeleteReceipt && (
+                    <th className="p-3 text-center">{isUrdu ? 'اقدام' : 'Action'}</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredRecoveries.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="p-8 text-center text-slate-400">
+                    <td colSpan={canVoidReceipt && onDeleteReceipt ? 11 : 10} className="p-8 text-center text-slate-400">
                       {isUrdu 
                         ? `اس تاریخ (${selectedDate}) پر کوئی اگرائی یا وصولی ریکارڈ نہیں ہوئی۔ "+ نئی اگرائی درج کریں" پر کلک کریں!` 
                         : `No recoveries recorded on ${selectedDate}. Click "+ Record Recovery" to add one!`}
@@ -489,6 +496,28 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
                       <td className="p-3 text-slate-500 text-[11px] max-w-xs truncate">
                         {r.notes}
                       </td>
+                      {canVoidReceipt && onDeleteReceipt && (
+                        <td className="p-3 text-center">
+                          {r.type === 'receipt' ? (
+                            <button
+                              onClick={() => {
+                                const ok = window.confirm(
+                                  isUrdu
+                                    ? `کیا واقعی واؤچر ${r.refNo} وائڈ کرنا ہے؟ رقم کھاتے میں واپس جمع ہو جائے گی۔`
+                                    : `Void voucher ${r.refNo}? The amount will be added back to the khata.`
+                                );
+                                if (ok) onDeleteReceipt(r.id);
+                              }}
+                              className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 transition"
+                              title={isUrdu ? 'واؤچر وائڈ کریں' : 'Void Voucher'}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          ) : (
+                            <span className="text-[10px] text-slate-400">—</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))
                 )}
@@ -501,7 +530,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
                   <td className="p-3 text-right font-mono text-emerald-800 font-black text-sm bg-emerald-100/50">
                     Rs {totalRecovered.toLocaleString()}
                   </td>
-                  <td colSpan={3} className="p-3 text-slate-500 text-[11px]">
+                  <td colSpan={canVoidReceipt && onDeleteReceipt ? 4 : 3} className="p-3 text-slate-500 text-[11px]">
                     (نقد: Rs {totalCashRecovered.toLocaleString()} | آن لائن: Rs {totalBankRecovered.toLocaleString()})
                   </td>
                 </tr>
