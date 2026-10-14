@@ -182,6 +182,8 @@ function mapInvoice(r: Row): Invoice {
     notes: optStr(r.void_reason),
     createdBy: str(r.created_by_name ?? ''),
     createdAt: iso(r.created_at),
+    isVoid: r.is_void === true,
+    voidReason: optStr(r.void_reason),
   };
 }
 
@@ -202,6 +204,8 @@ function mapReceipt(r: Row): ReceiptVoucher {
     newBalance: num(r.new_balance),
     shareToken: str(r.share_token),
     createdAt: iso(r.created_at),
+    isVoid: r.is_void === true,
+    voidReason: optStr(r.void_reason),
   };
 }
 
@@ -894,7 +898,9 @@ export type OutboxTable =
   | 'journal_entries'
   | 'whatsapp_share_logs'
   | 'vehicles'
-  | 'trips';
+  | 'trips'
+  | 'invoice_voids'
+  | 'receipt_voids';
 
 function rowParty(p: Party): Row {
   return {
@@ -1280,6 +1286,27 @@ export async function insertReceipt(db: Db, receipt: ReceiptVoucher): Promise<Re
     ledger,
     party: parties.data ? mapParty(parties.data as Row) : null,
   };
+}
+
+/**
+ * Void a sale invoice server-side: marks it void, voids its ledger rows and
+ * posts reversal rows (see migration 20261014000001). Idempotent.
+ */
+export async function voidInvoice(db: Db, invoiceId: string, reason: string): Promise<void> {
+  const { error } = await db.rpc('void_invoice', {
+    p_invoice_id: invoiceId,
+    p_reason: reason,
+  });
+  if (error) throw error;
+}
+
+/** Void a payment voucher server-side. Idempotent. */
+export async function voidReceipt(db: Db, receiptId: string, reason: string): Promise<void> {
+  const { error } = await db.rpc('void_receipt', {
+    p_receipt_id: receiptId,
+    p_reason: reason,
+  });
+  if (error) throw error;
 }
 
 export async function insertPurchase(db: Db, purchase: Purchase): Promise<Purchase> {
