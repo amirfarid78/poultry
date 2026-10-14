@@ -122,6 +122,8 @@ export interface Invoice {
   notes?: string;
   createdBy: string;
   createdAt: string;
+  isVoid?: boolean;
+  voidReason?: string;
 }
 
 export interface ReceiptVoucher {
@@ -140,6 +142,8 @@ export interface ReceiptVoucher {
   newBalance: number;
   shareToken: string;
   createdAt: string;
+  isVoid?: boolean;
+  voidReason?: string;
 }
 
 export interface Purchase {
