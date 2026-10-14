@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Party, Purchase, LedgerEntry, UserRole } from '../../types';
 import { formatPKR } from '../../utils/calculations';
 import { PartyModal } from '../common/PartyModal';
-import { Building2, Plus, ArrowRight, Printer, Share2, UserPlus, Edit3 } from 'lucide-react';
+import { Building2, Plus, ArrowRight, Printer, Share2, UserPlus, Edit3, X } from 'lucide-react';
 
 interface SupplierViewProps {
   parties: Party[];
@@ -15,6 +15,7 @@ interface SupplierViewProps {
   onOpenReceiptModal: (partyId?: string) => void;
   onAddParty?: (party: Party) => void;
   onUpdateParty?: (party: Party) => void;
+  onDeleteParty?: (partyId: string) => boolean | void;
 }
 
 export const SupplierView: React.FC<SupplierViewProps> = ({
@@ -27,7 +28,8 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
   onAddPurchase,
   onOpenReceiptModal,
   onAddParty,
-  onUpdateParty
+  onUpdateParty,
+  onDeleteParty
 }) => {
   const isUrdu = language === 'ur';
   const suppliers = parties.filter((p) => p.partyType === 'supplier');
@@ -134,17 +136,44 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
               {isUrdu ? 'سپلائر منتخب کریں:' : 'Select Supplier:'}
             </label>
             {selectedSupplier && (
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingSupplier(selectedSupplier);
-                  setIsAddSupplierModalOpen(true);
-                }}
-                className="text-[11px] font-bold text-blue-700 hover:text-blue-800 flex items-center gap-1"
-              >
-                <Edit3 className="w-3 h-3" />
-                <span>{isUrdu ? 'ترمیم پروفائل' : 'Edit Profile'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingSupplier(selectedSupplier);
+                    setIsAddSupplierModalOpen(true);
+                  }}
+                  className="text-[11px] font-bold text-blue-700 hover:text-blue-800 flex items-center gap-1"
+                >
+                  <Edit3 className="w-3 h-3" />
+                  <span>{isUrdu ? 'ترمیم پروفائل' : 'Edit Profile'}</span>
+                </button>
+                {onDeleteParty && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ok = window.confirm(
+                        isUrdu
+                          ? `کیا واقعی ”${selectedSupplier.urduName || selectedSupplier.name}“ کا کھاتہ حذف کرنا ہے؟ لین دین والا کھاتہ حذف نہیں ہوگا۔`
+                          : `Delete the account of "${selectedSupplier.name}"? Accounts with transactions cannot be deleted.`
+                      );
+                      if (ok && onDeleteParty) {
+                        const deleted = onDeleteParty(selectedSupplier.id);
+                        if (deleted) {
+                          const next = parties.find(
+                            (p) => p.partyType === 'supplier' && p.id !== selectedSupplier.id
+                          );
+                          setSelectedSupplierId(next?.id || '');
+                        }
+                      }
+                    }}
+                    className="text-[11px] font-bold text-rose-700 hover:text-rose-800 flex items-center gap-1"
+                  >
+                    <X className="w-3 h-3" />
+                    <span>{isUrdu ? 'کھاتہ حذف کریں' : 'Delete Account'}</span>
+                  </button>
+                )}
+              </div>
             )}
           </div>
           <select
