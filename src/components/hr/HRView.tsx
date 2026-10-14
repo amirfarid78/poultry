@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { Employee, UserRole } from '../../types';
 import { formatPKR } from '../../utils/calculations';
-import { Users, Plus, DollarSign, Calendar, CheckCircle, UserPlus } from 'lucide-react';
+import { Users, Plus, DollarSign, Calendar, CheckCircle, UserPlus, Edit3, Trash2 } from 'lucide-react';
 
 interface HRViewProps {
   employees: Employee[];
   currentRole: UserRole;
   language: 'en' | 'ur';
   onUpdateEmployees: (emps: Employee[]) => void;
+  onDeleteEmployee?: (empId: string) => void;
   onIssueAdvance?: (empId: string, amount: number, notes?: string) => void;
 }
 
@@ -16,6 +17,7 @@ export const HRView: React.FC<HRViewProps> = ({
   currentRole,
   language,
   onUpdateEmployees,
+  onDeleteEmployee,
   onIssueAdvance
 }) => {
   const isUrdu = language === 'ur';
@@ -31,7 +33,11 @@ export const HRView: React.FC<HRViewProps> = ({
   const [newEmpUrduName, setNewEmpUrduName] = useState('');
   const [newEmpRole, setNewEmpRole] = useState<'driver' | 'order_booker' | 'cashier' | 'other'>('driver');
   const [newEmpPhone, setNewEmpPhone] = useState('');
+  const [newEmpCnic, setNewEmpCnic] = useState('');
   const [newEmpSalary, setNewEmpSalary] = useState<number>(40000);
+  const [newEmpJoiningDate, setNewEmpJoiningDate] = useState(new Date().toISOString().split('T')[0]);
+  // Employee being edited (null = adding new)
+  const [editingEmp, setEditingEmp] = useState<Employee | null>(null);
 
   const selectedEmp = employees.find((e) => e.id === selectedEmpId) || employees[0];
 
@@ -63,29 +69,66 @@ export const HRView: React.FC<HRViewProps> = ({
     setTimeout(() => setNotice(null), 4000);
   };
 
-  const handleAddEmployee = (e: React.FormEvent) => {
+  const resetEmpForm = () => {
+    setNewEmpName('');
+    setNewEmpUrduName('');
+    setNewEmpRole('driver');
+    setNewEmpPhone('');
+    setNewEmpCnic('');
+    setNewEmpSalary(40000);
+    setNewEmpJoiningDate(new Date().toISOString().split('T')[0]);
+    setEditingEmp(null);
+  };
+
+  const startEditEmployee = (emp: Employee) => {
+    setEditingEmp(emp);
+    setNewEmpName(emp.name);
+    setNewEmpUrduName(emp.urduName);
+    setNewEmpRole(emp.role as any);
+    setNewEmpPhone(emp.phone);
+    setNewEmpCnic(emp.cnic);
+    setNewEmpSalary(emp.monthlySalary);
+    setNewEmpJoiningDate(emp.joiningDate || new Date().toISOString().split('T')[0]);
+    setShowAddEmpModal(true);
+  };
+
+  const handleSaveEmployee = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newEmpName.trim()) return;
 
-    const newEmp: Employee = {
-      id: `emp-${Date.now()}`,
-      code: `EMP-${100 + employees.length + 1}`,
-      name: newEmpName.trim(),
-      urduName: newEmpUrduName.trim() || newEmpName.trim(),
-      role: newEmpRole as any,
-      phone: newEmpPhone.trim(),
-      cnic: '35201-0000000-1',
-      monthlySalary: Number(newEmpSalary) || 35000,
-      advanceBalance: 0,
-      joiningDate: new Date().toISOString().split('T')[0]
-    };
+    if (editingEmp) {
+      // UPDATE existing employee (advance balance + code preserved)
+      const updated: Employee = {
+        ...editingEmp,
+        name: newEmpName.trim(),
+        urduName: newEmpUrduName.trim() || newEmpName.trim(),
+        role: newEmpRole as any,
+        phone: newEmpPhone.trim(),
+        cnic: newEmpCnic.trim() || editingEmp.cnic,
+        monthlySalary: Number(newEmpSalary) || 35000,
+        joiningDate: newEmpJoiningDate,
+      };
+      onUpdateEmployees(employees.map((emp) => (emp.id === updated.id ? updated : emp)));
+      setNotice(isUrdu ? `ملازم "${updated.name}" کی تفصیلات اپ ڈیٹ ہو گئیں!` : `Employee "${updated.name}" updated successfully!`);
+    } else {
+      const newEmp: Employee = {
+        id: `emp-${Date.now()}`,
+        code: `EMP-${100 + employees.length + 1}`,
+        name: newEmpName.trim(),
+        urduName: newEmpUrduName.trim() || newEmpName.trim(),
+        role: newEmpRole as any,
+        phone: newEmpPhone.trim(),
+        cnic: newEmpCnic.trim() || '35201-0000000-1',
+        monthlySalary: Number(newEmpSalary) || 35000,
+        advanceBalance: 0,
+        joiningDate: newEmpJoiningDate
+      };
+      onUpdateEmployees([...employees, newEmp]);
+      setNotice(isUrdu ? `نیا ملازم "${newEmp.name}" کامیابی سے شامل ہو گیا!` : `Employee "${newEmp.name}" added successfully!`);
+    }
 
-    onUpdateEmployees([...employees, newEmp]);
     setShowAddEmpModal(false);
-    setNewEmpName('');
-    setNewEmpUrduName('');
-    setNewEmpPhone('');
-    setNotice(isUrdu ? `نیا ملازم "${newEmp.name}" کامیابی سے شامل ہو گیا!` : `Employee "${newEmp.name}" added successfully!`);
+    resetEmpForm();
     setTimeout(() => setNotice(null), 4000);
   };
 
@@ -147,6 +190,7 @@ export const HRView: React.FC<HRViewProps> = ({
                 <th className="p-3 border-b">{isUrdu ? 'موبائل نمبر' : 'Phone'}</th>
                 <th className="p-3 border-b text-right">{isUrdu ? 'ماہانہ تنخواہ' : 'Salary'}</th>
                 <th className="p-3 border-b text-right text-rose-700">{isUrdu ? 'پیشگی لون بقایا' : 'Advance Balance'}</th>
+                <th className="p-3 border-b text-center">{isUrdu ? 'اقدامات' : 'Actions'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -168,6 +212,33 @@ export const HRView: React.FC<HRViewProps> = ({
                   </td>
                   <td className="p-3 text-right font-mono font-bold text-rose-700">
                     Rs {emp.advanceBalance.toLocaleString()}
+                  </td>
+                  <td className="p-3 text-center">
+                    <div className="flex items-center justify-center gap-1.5">
+                      <button
+                        onClick={() => startEditEmployee(emp)}
+                        className="p-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 transition"
+                        title={isUrdu ? 'ملازم میں ترمیم' : 'Edit Employee'}
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                      {onDeleteEmployee && (
+                        <button
+                          onClick={() => {
+                            const ok = window.confirm(
+                              isUrdu
+                                ? `کیا واقعی ملازم "${emp.name}" کو حذف کرنا ہے؟`
+                                : `Delete employee "${emp.name}"?`
+                            );
+                            if (ok) onDeleteEmployee(emp.id);
+                          }}
+                          className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 transition"
+                          title={isUrdu ? 'ملازم حذف کریں' : 'Delete Employee'}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -241,10 +312,14 @@ export const HRView: React.FC<HRViewProps> = ({
           <div className="bg-white rounded-2xl max-w-md w-full p-6 text-slate-800 shadow-2xl">
             <h3 className="text-base font-bold text-slate-900 mb-2 flex items-center gap-2">
               <UserPlus className="w-5 h-5 text-emerald-600" />
-              <span>{isUrdu ? 'نیا ملازم رجسٹر کریں' : 'Register New Employee'}</span>
+              <span>
+                {editingEmp
+                  ? (isUrdu ? 'ملازم کی تفصیلات میں ترمیم' : 'Edit Employee')
+                  : (isUrdu ? 'نیا ملازم رجسٹر کریں' : 'Register New Employee')}
+              </span>
             </h3>
 
-            <form onSubmit={handleAddEmployee} className="space-y-3 text-xs">
+            <form onSubmit={handleSaveEmployee} className="space-y-3 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
@@ -319,10 +394,39 @@ export const HRView: React.FC<HRViewProps> = ({
                 />
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'شناختی کارڈ نمبر:' : 'CNIC:'}
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="35201-1234567-1"
+                    value={newEmpCnic}
+                    onChange={(e) => setNewEmpCnic(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'شمولیت کی تاریخ:' : 'Joining Date:'}
+                  </label>
+                  <input
+                    type="date"
+                    value={newEmpJoiningDate}
+                    onChange={(e) => setNewEmpJoiningDate(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                  />
+                </div>
+              </div>
+
               <div className="flex items-center justify-end gap-2 pt-3 border-t">
                 <button
                   type="button"
-                  onClick={() => setShowAddEmpModal(false)}
+                  onClick={() => {
+                    setShowAddEmpModal(false);
+                    resetEmpForm();
+                  }}
                   className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl"
                 >
                   {isUrdu ? 'منسوخ' : 'Cancel'}
@@ -331,7 +435,9 @@ export const HRView: React.FC<HRViewProps> = ({
                   type="submit"
                   className="px-5 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl"
                 >
-                  {isUrdu ? 'ملازم محفوظ کریں' : 'Save Employee'}
+                  {editingEmp
+                    ? (isUrdu ? 'تبدیلیاں محفوظ کریں' : 'Save Changes')
+                    : (isUrdu ? 'ملازم محفوظ کریں' : 'Save Employee')}
                 </button>
               </div>
             </form>
