@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Party, LedgerEntry } from '../../types';
+import { Party, LedgerEntry, Invoice } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
 import { generateLedgerPDF, brandingFromSettings, loadLogoDataUrl } from '../../utils/pdfGenerator';
 import { useBusiness } from '../../context/BusinessContext';
@@ -28,19 +28,23 @@ import {
 interface CustomerLedgerViewProps {
   parties: Party[];
   ledgerEntries: LedgerEntry[];
+  invoices: Invoice[];
   language: 'en' | 'ur';
   onOpenReceiptModal: (partyId?: string) => void;
   onAddParty?: (party: Party) => void;
   onUpdateParty?: (party: Party) => void;
+  onDeleteParty?: (partyId: string) => boolean | void;
 }
 
 export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
   parties,
   ledgerEntries,
+  invoices,
   language,
   onOpenReceiptModal,
   onAddParty,
-  onUpdateParty
+  onUpdateParty,
+  onDeleteParty
 }) => {
   const isUrdu = language === 'ur';
   const { settings: biz } = useBusiness();
@@ -59,6 +63,19 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
   const [editingCustomer, setEditingCustomer] = useState<Party | null>(null);
 
   const selectedCustomer = parties.find((p) => p.id === selectedCustomerId) || customers[0];
+
+  // Mandi-rate fallback: server rows posted before the mandi columns existed
+  // carry no mandiRate — resolve it from the linked invoice instead so the
+  // column works even before the backfill migration is run.
+  const invoiceMandiRate = React.useMemo(() => {
+    const m = new Map<string, number>();
+    for (const inv of invoices) {
+      if (inv.mandiRatePer40kg > 0) m.set(inv.id, inv.mandiRatePer40kg);
+    }
+    return m;
+  }, [invoices]);
+  const mandiOf = (entry: LedgerEntry): number | undefined =>
+    entry.mandiRate ?? (entry.refId ? invoiceMandiRate.get(entry.refId) : undefined);
 
   // Filter entries for this customer
   const filteredEntries = ledgerEntries
@@ -281,17 +298,44 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
               {isUrdu ? 'گاہک منتخب کریں:' : 'Select Customer:'}
             </label>
             {selectedCustomer && (
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingCustomer(selectedCustomer);
-                  setIsAddCustomerModalOpen(true);
-                }}
-                className="text-[11px] font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1"
-              >
-                <Edit3 className="w-3 h-3" />
-                <span>{isUrdu ? 'تفصیلات ترمیم کریں' : 'Edit Profile'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingCustomer(selectedCustomer);
+                    setIsAddCustomerModalOpen(true);
+                  }}
+                  className="text-[11px] font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1"
+                >
+                  <Edit3 className="w-3 h-3" />
+                  <span>{isUrdu ? 'تفصیلات ترمیم کریں' : 'Edit Profile'}</span>
+                </button>
+                {onDeleteParty && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ok = window.confirm(
+                        isUrdu
+                          ? `کیا واقعی ”${selectedCustomer.urduName || selectedCustomer.name}“ کا کھاتہ حذف کرنا ہے؟ لین دین والا کھاتہ حذف نہیں ہوگا۔`
+                          : `Delete the account of "${selectedCustomer.name}"? Accounts with transactions cannot be deleted.`
+                      );
+                      if (ok && onDeleteParty) {
+                        const deleted = onDeleteParty(selectedCustomer.id);
+                        if (deleted) {
+                          const next = parties.find(
+                            (p) => p.partyType === 'customer' && p.id !== selectedCustomer.id
+                          );
+                          setSelectedCustomerId(next?.id || '');
+                        }
+                      }
+                    }}
+                    className="text-[11px] font-bold text-rose-700 hover:text-rose-800 flex items-center gap-1"
+                  >
+                    <X className="w-3 h-3" />
+                    <span>{isUrdu ? 'کھاتہ حذف کریں' : 'Delete Account'}</span>
+                  </button>
+                )}
+              </div>
             )}
           </div>
           <div className="flex items-center gap-1.5">
@@ -436,7 +480,7 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                         {entry.detailUrdu || entry.detail}
                       </td>
                       <td className="p-3 border-l border-amber-950/30 text-center font-mono text-xs font-bold text-amber-900 bg-amber-50/30">
-                        {entry.mandiRate ? `Rs ${entry.mandiRate.toLocaleString()}` : '-'}
+                        {mandiOf(entry) ? `Rs ${mandiOf(entry)!.toLocaleString()}` : '-'}
                       </td>
                       <td className="p-3 border-l border-amber-950/30 text-center font-mono text-xs text-amber-900 font-bold">
                         {entry.folioNo || `P-${idx + 1}`}
@@ -506,7 +550,7 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                     <td className="p-3 font-mono">{e.entryDate}</td>
                     <td className="p-3 font-medium text-slate-800">{isUrdu ? e.detailUrdu : e.detail}</td>
                     <td className="p-3 font-mono font-bold text-amber-900">
-                      {e.mandiRate ? `Rs ${e.mandiRate.toLocaleString()}` : '-'}
+                      {mandiOf(e) ? `Rs ${mandiOf(e)!.toLocaleString()}` : '-'}
                     </td>
                     <td className="p-3 font-mono text-slate-500">{e.folioNo || '-'}</td>
                     <td className="p-3 text-right font-mono font-bold text-rose-700">
