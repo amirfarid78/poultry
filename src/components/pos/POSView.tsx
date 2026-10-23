@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Party, 
   Invoice, 
+  InvoiceCharge,
   PaymentMode, 
   Vehicle, 
   UserRole,
@@ -102,10 +103,34 @@ export const POSView: React.FC<POSViewProps> = ({
   const [acRefNo, setAcRefNo] = useState<string>('');
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>(vehicles[0]?.id || '');
   const [notes, setNotes] = useState<string>('');
+  // Extra charges on this invoice: labour, loading, transport, or manually named.
+  const [charges, setCharges] = useState<InvoiceCharge[]>([]);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
   const [isAddPartyModalOpen, setIsAddPartyModalOpen] = useState(false);
   // Sale being edited (void + reissue flow). Null = creating a new sale.
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
+
+  const chargesTotal = charges.reduce((s, c) => s + (c.amount || 0), 0);
+
+  const CHARGE_PRESETS = [
+    { name: 'Labour / مزدوری', en: 'Labour' },
+    { name: 'Loading / لوڈنگ', en: 'Loading' },
+    { name: 'Transport / کرایہ', en: 'Transport' },
+    { name: 'Crate Charges / کریٹ', en: 'Crate Charges' },
+  ];
+
+  const addCharge = (name = '') => {
+    setCharges((prev) => [
+      ...prev,
+      { id: `chg-${Date.now()}-${prev.length}`, name, amount: 0 },
+    ]);
+  };
+  const updateCharge = (id: string, patch: Partial<InvoiceCharge>) => {
+    setCharges((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  };
+  const removeCharge = (id: string) => {
+    setCharges((prev) => prev.filter((c) => c.id !== id));
+  };
 
   const resetSaleForm = () => {
     setSelectedCustomerId(customers[0]?.id || '');
@@ -119,6 +144,7 @@ export const POSView: React.FC<POSViewProps> = ({
     setReceivedAC(0);
     setAcRefNo('');
     setNotes('');
+    setCharges([]);
     setEditingInvoice(null);
   };
 
@@ -137,6 +163,13 @@ export const POSView: React.FC<POSViewProps> = ({
     setAcRefNo(inv.acRefNo || '');
     setSelectedVehicleId(inv.vehicleId || '');
     setNotes(inv.notes || '');
+    setCharges(
+      (inv.charges ?? []).map((c, i) => ({
+        id: c.id || `chg-${inv.id}-${i}`,
+        name: c.name,
+        amount: c.amount,
+      }))
+    );
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -196,7 +229,8 @@ export const POSView: React.FC<POSViewProps> = ({
     divisor: 40,
     previousBalance: selectedCustomer?.currentBalance || 0,
     receivedCash,
-    receivedAC
+    receivedAC,
+    chargesTotal
   });
 
   // Intelligent speech-to-invoice entity parser
@@ -338,6 +372,16 @@ export const POSView: React.FC<POSViewProps> = ({
     const nextInvNo = `INV-${2400 + invoices.length + 1}`;
     const token = `tok-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 
+    // Keep only charge rows with a positive amount; default an empty name.
+    const cleanCharges: InvoiceCharge[] = charges
+      .filter((c) => (c.amount || 0) > 0)
+      .map((c, i) => ({
+        id: c.id || `chg-${Date.now()}-${i}`,
+        name: c.name.trim() || (isUrdu ? 'اضافی اخراجات' : 'Extra charge'),
+        amount: Math.round(c.amount),
+      }));
+    const cleanChargesTotal = cleanCharges.reduce((s, c) => s + c.amount, 0);
+
     return {
       id: `inv-${Date.now()}`,
       invoiceNumber: nextInvNo,
@@ -352,7 +396,9 @@ export const POSView: React.FC<POSViewProps> = ({
       netWeightKg: calc.netWeightKg,
       birdCount,
       mannDivisor: 40,
-      totalAmount: calc.totalAmount,
+      totalAmount: calc.birdTotal + cleanChargesTotal,
+      charges: cleanCharges,
+      chargesTotal: cleanChargesTotal,
       receivedCash,
       receivedAC,
       acPaymentMode,
@@ -433,7 +479,8 @@ export const POSView: React.FC<POSViewProps> = ({
         newBalance: calc.newBalance,
         shareUrl,
         lang: language,
-        businessName: `${biz.nameUr} (${biz.nameEn})`
+        businessName: `${biz.nameUr} (${biz.nameEn})`,
+        charges: newInvoice.charges
       });
       window.open(waUrl, '_blank');
     }
@@ -442,6 +489,7 @@ export const POSView: React.FC<POSViewProps> = ({
     setReceivedCash(0);
     setReceivedAC(0);
     setAcRefNo('');
+    setCharges([]);
 
     return newInvoice;
   };
@@ -470,6 +518,8 @@ export const POSView: React.FC<POSViewProps> = ({
     const balanceNote = inv.newBalance < 0 
       ? `پیشگی جمع (Advance with Us): Rs ${Math.abs(inv.newBalance).toLocaleString()}`
       : `بقایا واجب الادا (Net Balance Payable): Rs ${inv.newBalance.toLocaleString()}`;
+    const invCharges = (inv.charges ?? []).filter((c) => (c.amount || 0) > 0);
+    const birdTotal = inv.totalAmount - invCharges.reduce((s, c) => s + c.amount, 0);
 
     const text = [
       `*${biz.nameUr} - بل انوائس*`,
@@ -480,6 +530,8 @@ export const POSView: React.FC<POSViewProps> = ({
       `--------------------------------`,
       `*وزن / Weight:* ${inv.netWeightKg} kg (${inv.birdCount} birds)`,
       `*ریٹ فی من / Rate:* Rs ${inv.saleRatePer40kg.toLocaleString()}/40kg`,
+      invCharges.length > 0 ? `*مرغی کی رقم / Birds:* Rs ${birdTotal.toLocaleString()}` : null,
+      ...invCharges.map((c) => `*${c.name}:* Rs ${c.amount.toLocaleString()}`),
       `*کل رقم / Total:* Rs ${inv.totalAmount.toLocaleString()}`,
       `--------------------------------`,
       `*نقد وصولی / Wasool:* Rs ${inv.receivedCash.toLocaleString()}`,
@@ -519,7 +571,8 @@ export const POSView: React.FC<POSViewProps> = ({
       newBalance: inv.newBalance,
       shareUrl,
       lang: language,
-      businessName: `${biz.nameUr} (${biz.nameEn})`
+      businessName: `${biz.nameUr} (${biz.nameEn})`,
+      charges: inv.charges ?? []
     });
     window.open(waUrl, '_blank');
   };
@@ -1091,6 +1144,74 @@ export const POSView: React.FC<POSViewProps> = ({
             </div>
           </div>
 
+          {/* Row 4b: Extra Charges (Labour / Loading / Custom) */}
+          <div className="p-3.5 rounded-xl bg-amber-50/60 border border-amber-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-bold text-slate-800">
+                {isUrdu ? 'اضافی اخراجات / چارجز (مزدوری، لوڈنگ وغیرہ):' : 'Extra Charges (Labour, Loading, Custom):'}
+              </label>
+              <span className="text-[11px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded font-mono">
+                + Rs {chargesTotal.toLocaleString()}
+              </span>
+            </div>
+
+            {charges.map((c) => (
+              <div key={c.id} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={c.name}
+                  onChange={(e) => updateCharge(c.id, { name: e.target.value })}
+                  placeholder={isUrdu ? 'چارج کا نام (مثلاً مزدوری)' : 'Charge name (e.g. Labour)'}
+                  className="flex-1 px-3 py-1.5 rounded-xl border border-amber-300 text-xs font-semibold text-slate-800 bg-white focus:ring-2 focus:ring-amber-400"
+                />
+                <div className="relative w-32">
+                  <span className="absolute left-2.5 top-1.5 text-slate-400 text-[11px] font-bold">Rs</span>
+                  <input
+                    type="number"
+                    value={c.amount || ''}
+                    onChange={(e) => updateCharge(c.id, { amount: parseFloat(e.target.value) || 0 })}
+                    placeholder="0"
+                    className="w-full pl-8 pr-2 py-1.5 rounded-xl border border-amber-300 text-xs font-bold text-slate-900 font-mono bg-white focus:ring-2 focus:ring-amber-400"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeCharge(c.id)}
+                  className="p-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 transition"
+                  title={isUrdu ? 'حذف کریں' : 'Remove'}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <span className="text-[10px] text-slate-500 font-medium">{isUrdu ? 'فوری چارج:' : 'Quick add:'}</span>
+              {CHARGE_PRESETS.map((p) => (
+                <button
+                  key={p.en}
+                  type="button"
+                  onClick={() => addCharge(p.name)}
+                  className="text-[10px] px-2 py-0.5 rounded bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 font-bold transition"
+                >
+                  + {p.name}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => addCharge('')}
+                className="text-[10px] px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-700 text-white font-bold transition"
+              >
+                + {isUrdu ? 'اپنا نام لکھیں' : 'Custom name'}
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500">
+              {isUrdu
+                ? 'یہ رقم بل کے کل میں جمع ہوگی اور کھاتے میں الگ انٹری کے طور پر ریکارڈ ہوگی۔'
+                : 'Added to the bill total and recorded as separate ledger entries.'}
+            </p>
+          </div>
+
           {/* Row 5: Delivery Vehicle & Special Notes */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
             <div>
@@ -1165,6 +1286,28 @@ export const POSView: React.FC<POSViewProps> = ({
                 <span className="text-slate-400">{isUrdu ? 'ریٹ فی 40 کلو (Rate):' : 'Rate / 40kg:'}</span>
                 <span className="font-mono text-slate-200">Rs {saleRate.toLocaleString()}</span>
               </div>
+
+              <div className="flex justify-between py-1.5">
+                <span className="text-slate-400">{isUrdu ? 'مرغی کی رقم (Birds):' : 'Birds Total:'}</span>
+                <span className="font-mono text-slate-200">Rs {calc.birdTotal.toLocaleString()}</span>
+              </div>
+
+              {chargesTotal > 0 && (
+                <div className="py-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-amber-300">{isUrdu ? 'اضافی اخراجات:' : 'Extra Charges:'}</span>
+                    <span className="font-mono text-amber-200">+ Rs {chargesTotal.toLocaleString()}</span>
+                  </div>
+                  <div className="mt-1 space-y-0.5 pl-2">
+                    {charges.filter((c) => (c.amount || 0) > 0).map((c) => (
+                      <div key={c.id} className="flex justify-between text-[11px]">
+                        <span className="text-slate-400 truncate">{c.name || (isUrdu ? 'اضافی چارج' : 'Extra charge')}</span>
+                        <span className="font-mono text-slate-300">Rs {Math.round(c.amount).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="flex justify-between py-1.5 text-sm font-bold text-white">
                 <span className="text-emerald-400">{isUrdu ? 'کل بل (Total Amount):' : 'Total Bill:'}</span>
@@ -1297,6 +1440,11 @@ export const POSView: React.FC<POSViewProps> = ({
                     <td className="p-2.5 text-right font-mono font-bold text-slate-900">{inv.netWeightKg} kg</td>
                     <td className="p-2.5 text-right font-mono font-extrabold text-emerald-800">
                       Rs {inv.totalAmount.toLocaleString()}
+                      {(inv.chargesTotal || 0) > 0 && (
+                        <div className="text-[10px] font-bold text-amber-700 font-sans">
+                          + Rs {(inv.chargesTotal || 0).toLocaleString()} {isUrdu ? 'چارجز' : 'charges'}
+                        </div>
+                      )}
                     </td>
                     <td className="p-2.5 text-right font-mono text-slate-700">
                       Rs {totRec.toLocaleString()}
@@ -1479,9 +1627,20 @@ export const POSView: React.FC<POSViewProps> = ({
                       </div>
                       <div className="text-right">
                         <div className="font-bold">{printModalInvoice.netWeightKg} kg</div>
-                        <div className="font-bold">Rs {printModalInvoice.totalAmount.toLocaleString()}</div>
+                        <div className="font-bold">Rs {(printModalInvoice.totalAmount - (printModalInvoice.chargesTotal || 0)).toLocaleString()}</div>
                       </div>
                     </div>
+                    {(printModalInvoice.charges ?? []).map((c) => (
+                      <div key={c.id} className="flex justify-between mt-1">
+                        <div>
+                          <div>{c.name}</div>
+                          <div className="text-[10px] text-slate-600">{isUrdu ? 'اضافی چارج' : 'Extra charge'}</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-bold">Rs {c.amount.toLocaleString()}</div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   {/* Mathematical Balance Breakdown */}
@@ -1596,9 +1755,20 @@ export const POSView: React.FC<POSViewProps> = ({
                         <td className="p-2 text-right font-mono font-bold">{printModalInvoice.netWeightKg} kg</td>
                         <td className="p-2 text-right font-mono">Rs {printModalInvoice.saleRatePer40kg.toLocaleString()}</td>
                         <td className="p-2 text-right font-mono font-bold text-emerald-800">
-                          Rs {printModalInvoice.totalAmount.toLocaleString()}
+                          Rs {(printModalInvoice.totalAmount - (printModalInvoice.chargesTotal || 0)).toLocaleString()}
                         </td>
                       </tr>
+                      {(printModalInvoice.charges ?? []).map((c) => (
+                        <tr key={c.id}>
+                          <td className="p-2 font-medium text-amber-900">{c.name} <span className="text-[10px] text-slate-500">(Extra charge)</span></td>
+                          <td className="p-2 text-right font-mono">-</td>
+                          <td className="p-2 text-right font-mono">-</td>
+                          <td className="p-2 text-right font-mono">-</td>
+                          <td className="p-2 text-right font-mono font-bold text-amber-800">
+                            Rs {c.amount.toLocaleString()}
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
 

@@ -133,6 +133,8 @@ const INITIAL_INVOICES: Invoice[] = [
     birdCount: 40,
     mannDivisor: 40,
     totalAmount: 24400,
+    charges: [],
+    chargesTotal: 0,
     receivedCash: 20000,
     receivedAC: 0,
     acPaymentMode: 'cash',
@@ -157,6 +159,8 @@ const INITIAL_INVOICES: Invoice[] = [
     birdCount: 30,
     mannDivisor: 40,
     totalAmount: 19800,
+    charges: [],
+    chargesTotal: 0,
     receivedCash: 9000,
     receivedAC: 8000,
     acPaymentMode: 'bank_transfer',
@@ -808,12 +812,25 @@ export function loadSavedState(): AppState {
       const parsed = JSON.parse(raw);
       // Trust what was saved — even empty arrays. Only fall back to seed
       // values for keys that are entirely missing (old saves).
+      // Normalize invoices saved before extra charges existed.
+      const savedInvoices = (parsed.invoices ?? []) as Invoice[];
+      const invoices = savedInvoices.map((inv) => ({
+        ...inv,
+        charges: Array.isArray(inv.charges) ? inv.charges : [],
+        chargesTotal:
+          typeof inv.chargesTotal === 'number'
+            ? inv.chargesTotal
+            : (Array.isArray(inv.charges) ? inv.charges : []).reduce(
+                (s: number, c: { amount?: number }) => s + (c.amount || 0),
+                0
+              ),
+      }));
       return {
         currentRole: parsed.currentRole ?? 'owner',
         language: parsed.language ?? 'ur',
         todayMandiRate: parsed.todayMandiRate ?? 0,
         parties: parsed.parties ?? [],
-        invoices: parsed.invoices ?? [],
+        invoices,
         receipts: parsed.receipts ?? [],
         ledgerEntries: parsed.ledgerEntries ?? [],
         purchases: parsed.purchases ?? [],

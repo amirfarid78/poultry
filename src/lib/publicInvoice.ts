@@ -27,6 +27,7 @@ interface InvoiceRow {
   share_token: string;
   created_by: string | null;
   created_at: string;
+  charges?: Array<{ name?: string; amount?: number | string }> | null;
 }
 
 const num = (v: number | string | null | undefined): number =>
@@ -49,6 +50,16 @@ export function mapInvoiceRow(row: InvoiceRow, customerName: string, customerUrd
     birdCount: num(row.bird_count),
     mannDivisor: num(row.mann_divisor) || 40,
     totalAmount: num(row.total_amount),
+    charges: Array.isArray(row.charges)
+      ? row.charges.map((c, i) => ({
+          id: `chg-${row.id}-${i}`,
+          name: String(c?.name ?? 'Extra charge'),
+          amount: num(c?.amount),
+        }))
+      : [],
+    chargesTotal: Array.isArray(row.charges)
+      ? row.charges.reduce((s, c) => s + num(c?.amount), 0)
+      : 0,
     receivedCash: num(row.received_cash),
     receivedAC: num(row.received_ac),
     acPaymentMode: (row.ac_payment_mode ?? 'cash') as PaymentMode,

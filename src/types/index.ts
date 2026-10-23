@@ -86,12 +86,22 @@ export interface LedgerEntry {
   debit: number; // Naam (Customer owes us)
   credit: number; // Jama (Customer paid us)
   runningBalance: number;
-  refType: 'invoice' | 'invoice_payment' | 'receipt' | 'purchase' | 'adjustment' | 'opening' | 'journal';
+  refType: 'invoice' | 'invoice_payment' | 'invoice_charge' | 'receipt' | 'purchase' | 'adjustment' | 'opening' | 'journal';
   refId?: string;
   mandiRate?: number; // Mandi Rate per 40kg (منڈی ریٹ)
   rate?: number; // Quoted sale rate or purchase rate per 40kg
   weightKg?: number; // Net weight in kg
+  isVoid?: boolean; // True once voided (reversal rows carry the correction)
   createdAt: string;
+}
+
+/** Extra charge line on a sale invoice: labour, loading, transport, or any
+ *  manually named charge. Recorded as JSONB on the invoice row and posted as
+ *  its own ledger debit row (refType 'invoice_charge'). */
+export interface InvoiceCharge {
+  id: string;
+  name: string;
+  amount: number;
 }
 
 export interface Invoice {
@@ -108,7 +118,9 @@ export interface Invoice {
   netWeightKg: number;
   birdCount: number;
   mannDivisor: number; // 40
-  totalAmount: number; // round(saleRate * netWeightKg / 40)
+  totalAmount: number; // round(saleRate * netWeightKg / 40) + chargesTotal
+  charges: InvoiceCharge[]; // Extra charges: labour, loading, custom
+  chargesTotal: number; // Sum of charges, included in totalAmount
   receivedCash: number;
   receivedAC: number;
   acPaymentMode: PaymentMode;

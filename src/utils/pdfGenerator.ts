@@ -187,16 +187,29 @@ export function generateInvoicePDF(invoice: Invoice, branding?: PdfBranding): js
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(15, 23, 42);
+  const invCharges = (invoice.charges ?? []).filter((c) => (c.amount || 0) > 0);
+  const birdTotal = invoice.totalAmount - invCharges.reduce((s, c) => s + c.amount, 0);
   doc.text(`Broiler Live Chicken (${invoice.birdCount || 40} birds)`, 14, y + 18);
   doc.text(`${invoice.netWeightKg} kg`, 65, y + 18, { align: 'right' });
   doc.text(`Rs ${invoice.saleRatePer40kg.toLocaleString()}`, 95, y + 18, { align: 'right' });
   doc.setFont('helvetica', 'bold');
-  doc.text(`Rs ${invoice.totalAmount.toLocaleString()}`, pageWidth - 14, y + 18, { align: 'right' });
+  doc.text(`Rs ${birdTotal.toLocaleString()}`, pageWidth - 14, y + 18, { align: 'right' });
 
-  doc.line(10, y + 22, pageWidth - 10, y + 22);
+  let chargeY = y + 18;
+  for (const c of invCharges) {
+    chargeY += 6;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(120, 53, 15);
+    doc.text(`${c.name} (Extra charge)`, 14, chargeY);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Rs ${c.amount.toLocaleString()}`, pageWidth - 14, chargeY, { align: 'right' });
+  }
+
+  doc.line(10, chargeY + 4, pageWidth - 10, chargeY + 4);
 
   // Bill Summary Block
-  let currentY = y + 28;
+  let currentY = chargeY + 10;
   const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
 
   doc.setFontSize(8.5);

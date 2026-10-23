@@ -66,7 +66,36 @@ async function replayOne(db: SupabaseClient, entry: OutboxEntry): Promise<void> 
 
   // Void pseudo-tables: route to the SECURITY DEFINER void RPCs (they own
   // the ledger reversals; the client never writes ledger_entries directly).
-  if (table === 'invoice_voids' || table === 'receipt_voids') {
+  // ledger_edits: route to the edit_ledger_entry RPC (it owns the running-
+  // balance recompute on the server).
+  if (table === 'invoice_voids' || table === 'receipt_voids' || table === 'ledger_edits') {
+    if (table === 'ledger_edits') {
+      const p = entry.payload as {
+        entryId?: string;
+        entryDate?: string;
+        detail?: string;
+        detailUrdu?: string;
+        debit?: number;
+        credit?: number;
+        refId?: string;
+        refType?: string;
+        partyId?: string;
+      };
+      if (!p.entryId || !p.entryDate) return;
+      const { error } = await db.rpc('edit_ledger_entry', {
+        p_entry_id: p.entryId,
+        p_entry_date: p.entryDate,
+        p_detail: p.detail ?? '',
+        p_detail_urdu: p.detailUrdu ?? null,
+        p_debit: p.debit ?? 0,
+        p_credit: p.credit ?? 0,
+        p_ref_id: p.refId ?? null,
+        p_ref_type: p.refType ?? null,
+        p_party_id: p.partyId ?? null,
+      });
+      if (error) throw error;
+      return;
+    }
     const p = entry.payload as { invoiceId?: string; receiptId?: string; reason?: string };
     const reason = typeof p.reason === 'string' && p.reason ? p.reason : 'Voided by user';
     if (table === 'invoice_voids') {

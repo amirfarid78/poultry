@@ -1,68 +1,87 @@
-import React, { useState } from 'react';
-import { Party, LedgerEntry, Invoice } from '../../types';
+import React, { useState, useEffect } from 'react';
+import { Party, LedgerEntry, Invoice, UserRole } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
 import { generateLedgerPDF, brandingFromSettings, loadLogoDataUrl } from '../../utils/pdfGenerator';
 import { useBusiness } from '../../context/BusinessContext';
 import { PartyModal } from '../common/PartyModal';
+import { LedgerFilterBar } from './LedgerFilterBar';
+import { LedgerPrintModal } from './LedgerPrintModal';
+import { LedgerEntryEditModal, LedgerEditPatch } from './LedgerEntryEditModal';
+import {
+  LedgerFilterState,
+  DEFAULT_LEDGER_FILTER,
+  filterLedgerEntries,
+} from './ledgerFilter';
 import { 
   BookOpen, 
   Table, 
   Printer, 
   Share2, 
-  Calendar, 
-  User, 
   UserPlus,
   Edit3,
-  ArrowUpDown, 
   Download, 
-  CreditCard,
   PlusCircle,
-  FileSpreadsheet,
   FileDown,
-  Copy,
-  Check,
+  Pencil,
   X,
-  FileText
 } from 'lucide-react';
 
 interface CustomerLedgerViewProps {
   parties: Party[];
   ledgerEntries: LedgerEntry[];
   invoices: Invoice[];
+  currentRole: UserRole;
   language: 'en' | 'ur';
   onOpenReceiptModal: (partyId?: string) => void;
   onAddParty?: (party: Party) => void;
   onUpdateParty?: (party: Party) => void;
   onDeleteParty?: (partyId: string) => boolean | void;
+  onEditLedgerEntry?: (entryId: string, patch: LedgerEditPatch) => void;
 }
 
 export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
   parties,
   ledgerEntries,
   invoices,
+  currentRole,
   language,
   onOpenReceiptModal,
   onAddParty,
   onUpdateParty,
-  onDeleteParty
+  onDeleteParty,
+  onEditLedgerEntry,
 }) => {
   const isUrdu = language === 'ur';
   const { settings: biz } = useBusiness();
   const customers = parties.filter((p) => p.partyType === 'customer');
+  const canEditLedger = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
 
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '');
   const [layoutMode, setLayoutMode] = useState<'traditional' | 'modern'>('traditional');
-  const [startDate, setStartDate] = useState<string>('2024-10-01');
-  const [endDate, setEndDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [filter, setFilter] = useState<LedgerFilterState>(DEFAULT_LEDGER_FILTER);
+  const [editingEntry, setEditingEntry] = useState<LedgerEntry | null>(null);
   
   // Modals
   const [showPrintModal, setShowPrintModal] = useState(false);
-  const [copiedNotice, setCopiedNotice] = useState(false);
   const [isAddCustomerModalOpen, setIsAddCustomerModalOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Party | null>(null);
 
   const selectedCustomer = parties.find((p) => p.id === selectedCustomerId) || customers[0];
+
+  // Ctrl+P prints the currently filtered statement (today's ledger when the
+  // Today preset is active).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
+        const tag = (document.activeElement?.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        e.preventDefault();
+        setShowPrintModal(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Mandi-rate fallback: server rows posted before the mandi columns existed
   // carry no mandiRate — resolve it from the linked invoice instead so the
@@ -77,18 +96,11 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
   const mandiOf = (entry: LedgerEntry): number | undefined =>
     entry.mandiRate ?? (entry.refId ? invoiceMandiRate.get(entry.refId) : undefined);
 
-  // Filter entries for this customer
-  const filteredEntries = ledgerEntries
-    .filter((entry) => entry.partyId === selectedCustomerId)
-    .filter((entry) => {
-      if (startDate && entry.entryDate < startDate) return false;
-      if (endDate && entry.entryDate > endDate) return false;
-      if (searchTerm && !entry.detail.toLowerCase().includes(searchTerm.toLowerCase()) && !entry.detailUrdu.includes(searchTerm)) {
-        return false;
-      }
-      return true;
-    })
-    .sort((a, b) => new Date(a.entryDate).getTime() - new Date(b.entryDate).getTime() || a.id.localeCompare(b.id));
+  // Deep filter: void visibility, entry-type group, date range, search —
+  // voided rows are hidden by default (their reversals carry the correction).
+  const filteredEntries = filterLedgerEntries(ledgerEntries, selectedCustomerId, filter);
+  const startDate = filter.startDate || '…';
+  const endDate = filter.endDate || new Date().toISOString().split('T')[0];
 
   // Calculations for totals
   const totalDebit = filteredEntries.reduce((sum, e) => sum + (e.debit || 0), 0);
@@ -121,32 +133,6 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
       businessName: `${biz.nameUr} (${biz.nameEn})`
     });
     window.open(url, '_blank');
-  };
-
-  const handleCopyWhatsAppText = () => {
-    if (!selectedCustomer) return;
-    const bizName = `${biz.nameUr} (${biz.nameEn})`;
-    const balText = finalBalance < 0
-      ? `پیشگی جمع رقم (Advance Balance with Us): Rs ${Math.abs(finalBalance).toLocaleString()}`
-      : `کل واجب الادا بقایا (Net Balance Due): Rs ${finalBalance.toLocaleString()}`;
-
-    const text = [
-      `*${bizName} - کھاتہ اسٹیٹمنٹ*`,
-      `--------------------------------`,
-      `*گاہک / Customer:* ${selectedCustomer.urduName || selectedCustomer.name}`,
-      `*تاریخ / Period:* ${startDate} تا ${endDate}`,
-      `--------------------------------`,
-      `*کل مال کی رقم / Total Purchases (Debit):* Rs ${totalDebit.toLocaleString()}`,
-      `*کل وصول شدہ رقم / Total Paid (Credit):* Rs ${totalCredit.toLocaleString()}`,
-      `--------------------------------`,
-      `*${balText}*`,
-      `--------------------------------`,
-      `شکریہ! برائے تصدیق رابطہ فرمائیں۔`
-    ].filter(Boolean).join('\n');
-
-    navigator.clipboard.writeText(text);
-    setCopiedNotice(true);
-    setTimeout(() => setCopiedNotice(false), 3000);
   };
 
   const handleDownloadPDF = async () => {
@@ -290,9 +276,9 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
         </div>
       </div>
 
-      {/* Customer Selector & Filter Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-white p-4 rounded-2xl border border-slate-200">
-        <div className="md:col-span-5">
+      {/* Customer Selector */}
+      <div className="bg-white p-4 rounded-2xl border border-slate-200">
+        <div className="max-w-xl">
           <div className="flex items-center justify-between mb-1">
             <label className="block text-xs font-bold text-slate-700">
               {isUrdu ? 'گاہک منتخب کریں:' : 'Select Customer:'}
@@ -352,38 +338,40 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
             </select>
           </div>
         </div>
-
-        <div className="md:col-span-3">
-          <label className="block text-xs font-bold text-slate-700 mb-1">
-            {isUrdu ? 'شروع تاریخ:' : 'From Date:'}
-          </label>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="w-full px-3 py-1.5 rounded-xl border border-slate-300 text-xs text-slate-800"
-          />
-        </div>
-
-        <div className="md:col-span-4">
-          <label className="block text-xs font-bold text-slate-700 mb-1">
-            {isUrdu ? 'اختتامی تاریخ:' : 'To Date:'}
-          </label>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            className="w-full px-3 py-1.5 rounded-xl border border-slate-300 text-xs text-slate-800"
-          />
-        </div>
       </div>
+
+      {/* Deep filter: date presets + range, entry type, search, voided toggle */}
+      <LedgerFilterBar filter={filter} onChange={setFilter} language={language} />
 
       {/* Customer Balance Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-          <span className="text-[11px] font-bold text-slate-500 uppercase">
-            {isUrdu ? 'سابقہ اوپننگ بیلنس' : 'Opening Balance'}
-          </span>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold text-slate-500 uppercase">
+              {isUrdu ? 'سابقہ اوپننگ بیلنس' : 'Opening Balance'}
+            </span>
+            {canEditLedger && onEditLedgerEntry && (
+              <button
+                type="button"
+                onClick={() => {
+                  const openingRow = ledgerEntries.find(
+                    (e) => e.partyId === selectedCustomerId && e.refType === 'opening' && !e.isVoid
+                  );
+                  if (openingRow) {
+                    setEditingEntry(openingRow);
+                  } else if (selectedCustomer) {
+                    setEditingCustomer(selectedCustomer);
+                    setIsAddCustomerModalOpen(true);
+                  }
+                }}
+                className="text-[11px] font-bold text-blue-700 hover:text-blue-800 flex items-center gap-1"
+                title={isUrdu ? 'ابتدائی بیلنس میں ترمیم' : 'Edit opening balance'}
+              >
+                <Pencil className="w-3 h-3" />
+                <span>{isUrdu ? 'ترمیم' : 'Edit'}</span>
+              </button>
+            )}
+          </div>
           <p className="text-lg font-black text-slate-800 font-mono mt-1">
             {formatPKR(selectedCustomer?.openingBalance || 0, true, language)}
           </p>
@@ -466,6 +454,9 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                   <th className="p-3 border-l-2 border-amber-950/60 w-28 bg-rose-50 text-rose-950">نام (Debit)</th>
                   <th className="p-3 border-l-2 border-amber-950/60 w-28 bg-emerald-50 text-emerald-950">جمع (Credit)</th>
                   <th className="p-3 w-32 bg-amber-50 text-amber-950">بقایا (Balance)</th>
+                  {canEditLedger && onEditLedgerEntry && (
+                    <th className="p-3 w-10 bg-amber-50 text-amber-950 no-print text-center">✎</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-amber-900/20">
@@ -496,6 +487,20 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                       }`}>
                         {Math.abs(entry.runningBalance).toLocaleString()} {isAdv ? 'پیشگی' : ''}
                       </td>
+                      {canEditLedger && onEditLedgerEntry && (
+                        <td className="p-2 text-center no-print">
+                          {!entry.isVoid && (
+                            <button
+                              type="button"
+                              onClick={() => setEditingEntry(entry)}
+                              className="p-1.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 transition"
+                              title={isUrdu ? 'انٹری میں ترمیم' : 'Edit entry'}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -516,6 +521,7 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                   }`}>
                     {Math.abs(finalBalance).toLocaleString()} {finalBalance < 0 ? 'پیشگی' : ''}
                   </td>
+                  {canEditLedger && onEditLedgerEntry && <td className="no-print" />}
                 </tr>
               </tfoot>
             </table>
@@ -542,6 +548,9 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                   <th className="p-3 border-b text-right text-rose-700">{isUrdu ? 'نام (Debit / مال)' : 'Debit (Sale)'}</th>
                   <th className="p-3 border-b text-right text-emerald-700">{isUrdu ? 'جمع (Credit / وصولی)' : 'Credit (Paid)'}</th>
                   <th className="p-3 border-b text-right">{isUrdu ? 'بقایا (Running Balance)' : 'Running Balance'}</th>
+                  {canEditLedger && onEditLedgerEntry && (
+                    <th className="p-3 border-b text-center no-print">{isUrdu ? 'ترمیم' : 'Edit'}</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -563,7 +572,26 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                       <span className={e.runningBalance < 0 ? 'text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded' : 'text-slate-900'}>
                         {formatPKR(e.runningBalance, true, language)}
                       </span>
+                      {e.isVoid && (
+                        <span className="ml-1 text-[9px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded">
+                          {isUrdu ? 'وائڈ' : 'VOID'}
+                        </span>
+                      )}
                     </td>
+                    {canEditLedger && onEditLedgerEntry && (
+                      <td className="p-3 text-center no-print">
+                        {!e.isVoid && (
+                          <button
+                            type="button"
+                            onClick={() => setEditingEntry(e)}
+                            className="p-1.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 transition"
+                            title={isUrdu ? 'انٹری میں ترمیم' : 'Edit entry'}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -597,173 +625,30 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
         </div>
       </div>
 
-      {/* DEDICATED PRINT & WHATSAPP LEDGER PREVIEW MODAL */}
+      {/* Shared printable statement modal (PDF / WhatsApp / print) */}
       {showPrintModal && selectedCustomer && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in fade-in zoom-in-95">
-            {/* Header */}
-            <div className="no-print bg-slate-900 text-white p-4 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Printer className="w-5 h-5 text-amber-400" />
-                <div>
-                  <h3 className="text-sm font-extrabold">
-                    {isUrdu ? 'کھاتہ پرنٹ، پی ڈی ایف و واٹس ایپ' : 'Customer Ledger Statement Print & PDF'}
-                  </h3>
-                  <span className="text-[11px] text-slate-400">
-                    {selectedCustomer.urduName || selectedCustomer.name} ({startDate} - {endDate})
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowPrintModal(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+        <LedgerPrintModal
+          party={selectedCustomer}
+          entries={filteredEntries}
+          startDate={filter.startDate || '…'}
+          endDate={filter.endDate || new Date().toISOString().split('T')[0]}
+          language={language}
+          onClose={() => setShowPrintModal(false)}
+        />
+      )}
 
-            {/* Printable Ledger Area */}
-            <div className="p-4 max-h-[65vh] overflow-y-auto bg-slate-100 flex justify-center">
-              <div className="print-page-a4 w-full bg-white p-6 shadow-sm border border-slate-300 rounded text-slate-900 text-xs">
-                {/* Official header */}
-                <div className="border-b-2 border-amber-600 pb-3 mb-4 text-center">
-                  <p className="font-urdu text-sm font-bold text-slate-800">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</p>
-                  <div className="flex justify-center my-1">
-                    <img src={biz.logoUrl} alt={biz.nameEn} className="h-14 object-contain" />
-                  </div>
-                  <h2 className="text-base font-black text-amber-800 uppercase">{biz.nameEn}</h2>
-                  {biz.nameUr && <p className="font-urdu text-xs font-semibold text-slate-700">{biz.nameUr} — کھاتہ رجسٹر و مکمل اسٹیٹمنٹ</p>}
-                  {(biz.phone || biz.city) && (
-                    <p className="text-[10px] text-slate-500" dir="ltr">
-                      {[biz.phone, biz.city].filter(Boolean).join(' | ')}
-                    </p>
-                  )}
-                </div>
-
-                {/* Customer Info Box */}
-                <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-lg border border-slate-200 mb-4">
-                  <div>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase">Customer / Khata:</span>
-                    <h3 className="font-bold text-slate-900 text-sm">
-                      {selectedCustomer.urduName ? `${selectedCustomer.urduName} (${selectedCustomer.name})` : selectedCustomer.name}
-                    </h3>
-                    <p className="text-[10px] text-slate-600">Phone: {selectedCustomer.phone || '-'}</p>
-                    <p className="text-[10px] text-slate-600">Address: {selectedCustomer.address || selectedCustomer.city || 'Lahore'}</p>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase">Statement Period:</span>
-                    <p className="font-mono text-slate-800 font-bold">{startDate} to {endDate}</p>
-                    <div className="mt-2">
-                      <span className="text-[10px] font-bold text-slate-500 uppercase block">Current Balance:</span>
-                      <span className={`font-mono font-black text-sm ${
-                        finalBalance < 0 ? 'text-emerald-700' : 'text-slate-900'
-                      }`}>
-                        {finalBalance < 0 
-                          ? `-Rs ${Math.abs(finalBalance).toLocaleString()} (Adv)` 
-                          : `Rs ${finalBalance.toLocaleString()}`}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Table */}
-                <table className="w-full text-xs border-collapse mb-4 border border-slate-200">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300">
-                      <th className="p-2 text-left">Date</th>
-                      <th className="p-2 text-left">Description</th>
-                      <th className="p-2 text-center">Ref</th>
-                      <th className="p-2 text-right">Debit (Naam)</th>
-                      <th className="p-2 text-right">Credit (Jama)</th>
-                      <th className="p-2 text-right">Balance</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {filteredEntries.map((e) => (
-                      <tr key={e.id}>
-                        <td className="p-2 font-mono text-[11px]">{e.entryDate}</td>
-                        <td className="p-2 font-medium">{e.detail}</td>
-                        <td className="p-2 text-center font-mono text-[10px] text-slate-500">{e.folioNo || '-'}</td>
-                        <td className="p-2 text-right font-mono text-rose-700 font-semibold">{e.debit > 0 ? e.debit.toLocaleString() : '-'}</td>
-                        <td className="p-2 text-right font-mono text-emerald-700 font-semibold">{e.credit > 0 ? e.credit.toLocaleString() : '-'}</td>
-                        <td className="p-2 text-right font-mono font-bold">
-                          {e.runningBalance < 0 
-                            ? `-${Math.abs(e.runningBalance).toLocaleString()} Adv` 
-                            : e.runningBalance.toLocaleString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-slate-100 font-bold border-t border-slate-300">
-                      <td colSpan={3} className="p-2 text-center">Summary Totals:</td>
-                      <td className="p-2 text-right font-mono text-rose-800">Rs {totalDebit.toLocaleString()}</td>
-                      <td className="p-2 text-right font-mono text-emerald-800">Rs {totalCredit.toLocaleString()}</td>
-                      <td className={`p-2 text-right font-mono font-black ${finalBalance < 0 ? 'text-emerald-700' : 'text-slate-900'}`}>
-                        {finalBalance < 0 ? `-Rs ${Math.abs(finalBalance).toLocaleString()} Adv` : `Rs ${finalBalance.toLocaleString()}`}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-
-                {/* Signatures */}
-                <div className="grid grid-cols-2 gap-8 pt-8 mt-4 border-t border-slate-200 text-center text-[10px] text-slate-500">
-                  <div>
-                    <div className="w-32 mx-auto border-b border-slate-400 mb-1"></div>
-                    <p>Customer Signature (دستخط کھاتہ دار)</p>
-                  </div>
-                  <div>
-                    <div className="w-32 mx-auto border-b border-slate-400 mb-1"></div>
-                    <p>Proprietor Signature (دستخط منشی / مالک)</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Actions */}
-            <div className="no-print p-4 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleCopyWhatsAppText}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition"
-                >
-                  {copiedNotice ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-                  <span>{copiedNotice ? (isUrdu ? 'کاپی ہوگیا!' : 'Copied!') : (isUrdu ? 'واٹس ایپ متن کاپی' : 'Copy WhatsApp Text')}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleWhatsAppShare}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition shadow-sm"
-                >
-                  <Share2 className="w-4 h-4" />
-                  <span>{isUrdu ? 'واٹس ایپ پر بھیجیں' : 'Send on WhatsApp'}</span>
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleDownloadPDF}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition shadow-sm"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>{isUrdu ? 'پی ڈی ایف ڈاؤن لوڈ' : 'Download PDF'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-md"
-                >
-                  <Printer className="w-4 h-4 text-emerald-400" />
-                  <span>{isUrdu ? 'ابھی پرنٹ کریں' : 'Print Statement Now'}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Ledger row edit modal */}
+      {editingEntry && onEditLedgerEntry && (
+        <LedgerEntryEditModal
+          entry={editingEntry}
+          partyName={selectedCustomer?.urduName || selectedCustomer?.name || ''}
+          language={language}
+          onClose={() => setEditingEntry(null)}
+          onSave={(entryId, patch) => {
+            onEditLedgerEntry(entryId, patch);
+            setEditingEntry(null);
+          }}
+        />
       )}
 
       {/* Add / Edit Customer Modal */}

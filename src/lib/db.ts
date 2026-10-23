@@ -169,6 +169,16 @@ function mapInvoice(r: Row): Invoice {
     birdCount: num(r.bird_count),
     mannDivisor: num(r.mann_divisor, 40),
     totalAmount: num(r.total_amount),
+    charges: Array.isArray(r.charges)
+      ? (r.charges as Array<{ name?: unknown; amount?: unknown }>).map((c, i) => ({
+          id: `chg-${str(r.id)}-${i}`,
+          name: str(c?.name, 'Extra charge'),
+          amount: num(c?.amount),
+        }))
+      : [],
+    chargesTotal: Array.isArray(r.charges)
+      ? (r.charges as Array<{ amount?: unknown }>).reduce((s, c) => s + num(c?.amount), 0)
+      : 0,
     receivedCash: num(r.received_cash),
     receivedAC: num(r.received_ac),
     acPaymentMode: (r.ac_payment_mode as Invoice['acPaymentMode']) ?? 'cash',
@@ -267,6 +277,7 @@ function mapLedger(r: Row): LedgerEntry {
     mandiRate: optNum(r.mandi_rate),
     rate: optNum(r.rate),
     weightKg: optNum(r.weight_kg),
+    isVoid: r.is_void === true,
     createdAt: iso(r.created_at),
   };
 }
@@ -900,7 +911,8 @@ export type OutboxTable =
   | 'vehicles'
   | 'trips'
   | 'invoice_voids'
-  | 'receipt_voids';
+  | 'receipt_voids'
+  | 'ledger_edits';
 
 function rowParty(p: Party): Row {
   return {
@@ -940,6 +952,7 @@ function rowInvoice(inv: Invoice): Row {
     bird_count: inv.birdCount,
     mann_divisor: inv.mannDivisor,
     total_amount: inv.totalAmount,
+    charges: (inv.charges ?? []).map((c) => ({ name: c.name, amount: c.amount })),
     received_cash: inv.receivedCash,
     received_ac: inv.receivedAC,
     ac_payment_mode: inv.acPaymentMode,
@@ -1305,6 +1318,40 @@ export async function voidReceipt(db: Db, receiptId: string, reason: string): Pr
   const { error } = await db.rpc('void_receipt', {
     p_receipt_id: receiptId,
     p_reason: reason,
+  });
+  if (error) throw error;
+}
+
+export interface LedgerEditPatch {
+  entryId: string;
+  entryDate: string;
+  detail: string;
+  detailUrdu?: string;
+  debit: number;
+  credit: number;
+  /** Stable document reference — lets the RPC find the server row even when
+   *  the client row id is an optimistic local id. */
+  refId?: string;
+  refType?: string;
+  partyId?: string;
+}
+
+/**
+ * Correct a ledger row server-side: updates date/narration/amount (amount only
+ * on manual rows — the RPC enforces this), recomputes the party's running
+ * balances and refreshes parties.current_balance. Idempotent per call.
+ */
+export async function editLedgerEntry(db: Db, patch: LedgerEditPatch): Promise<void> {
+  const { error } = await db.rpc('edit_ledger_entry', {
+    p_entry_id: patch.entryId,
+    p_entry_date: patch.entryDate,
+    p_detail: patch.detail,
+    p_detail_urdu: patch.detailUrdu ?? null,
+    p_debit: patch.debit,
+    p_credit: patch.credit,
+    p_ref_id: patch.refId ?? null,
+    p_ref_type: patch.refType ?? null,
+    p_party_id: patch.partyId ?? null,
   });
   if (error) throw error;
 }

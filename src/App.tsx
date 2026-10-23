@@ -330,6 +330,37 @@ function AppShell() {
   };
 
   // ---- Invoice state helpers (pure) ---------------------------------------
+  // recomputePartyChain: rebuild a party's running balances in chronological
+  // order, skipping voided rows (their reversal rows carry the correction).
+  // Mirrors the server edit_ledger_entry() recompute.
+  const recomputePartyChain = (
+    entries: LedgerEntry[],
+    partyId: string
+  ): { entries: LedgerEntry[]; finalBalance: number } => {
+    const ordered = entries
+      .filter((e) => e.partyId === partyId && !e.isVoid)
+      .sort(
+        (a, b) =>
+          a.entryDate.localeCompare(b.entryDate) ||
+          a.createdAt.localeCompare(b.createdAt) ||
+          a.id.localeCompare(b.id)
+      );
+    let bal = 0;
+    const bals = new Map<string, number>();
+    for (const e of ordered) {
+      bal = Math.round(bal + (e.debit || 0) - (e.credit || 0));
+      bals.set(e.id, bal);
+    }
+    return {
+      entries: entries.map((e) =>
+        e.partyId === partyId && !e.isVoid && bals.has(e.id)
+          ? { ...e, runningBalance: bals.get(e.id)! }
+          : e
+      ),
+      finalBalance: bal,
+    };
+  };
+
   // applyInvoiceToState: post a new invoice's effects (party balance, ledger,
   // cash, stock, linked order). reverseInvoiceForVoid: undo them for a void —
   // marks the invoice void, posts local reversal rows, restores balance/stock.
@@ -345,9 +376,12 @@ function AppShell() {
       return p;
     });
 
-    // 2. Insert debit ledger entry for sale
+    // 2. Insert debit ledger entry for the bird sale. Extra charges
+    // (labour, loading, custom) post as their own 'invoice_charge' rows
+    // right after, so the mandi-rate column stays meaningful on the sale row.
     const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
-    const intermediateBal = invoice.previousBalance + invoice.totalAmount;
+    const chargesTotal = invoice.chargesTotal || 0;
+    const birdTotal = Math.max(0, invoice.totalAmount - chargesTotal);
 
     const saleLedgerEntry: LedgerEntry = {
       id: `led-${Date.now()}-1`,
@@ -357,9 +391,9 @@ function AppShell() {
       detail: `Sale: ${invoice.netWeightKg} kg @ Rs ${invoice.saleRatePer40kg.toLocaleString()}/40kg`,
       detailUrdu: `مرغ فروخت: ${invoice.netWeightKg} کلو، ریٹ ${invoice.saleRatePer40kg.toLocaleString()}`,
       folioNo: invoice.invoiceNumber,
-      debit: invoice.totalAmount,
+      debit: birdTotal,
       credit: 0,
-      runningBalance: intermediateBal,
+      runningBalance: invoice.previousBalance + birdTotal,
       refType: 'invoice',
       refId: invoice.id,
       mandiRate: invoice.mandiRatePer40kg,
@@ -369,6 +403,28 @@ function AppShell() {
     };
 
     const newLedgerEntries = [...prev.ledgerEntries, saleLedgerEntry];
+
+    // 2b. One debit row per extra charge, chained onto the running balance.
+    let chargeRunBal = invoice.previousBalance + birdTotal;
+    (invoice.charges ?? []).forEach((c, i) => {
+      if (!(c.amount > 0)) return;
+      chargeRunBal = Math.round(chargeRunBal + c.amount);
+      newLedgerEntries.push({
+        id: `led-${Date.now()}-1c${i}`,
+        partyId: invoice.customerId,
+        partyType: 'customer',
+        entryDate: invoice.invoiceDate,
+        detail: `Charge: ${c.name} (Rs ${c.amount.toLocaleString()})`,
+        detailUrdu: `اخراجات: ${c.name} (${c.amount.toLocaleString()} روپے)`,
+        folioNo: invoice.invoiceNumber,
+        debit: c.amount,
+        credit: 0,
+        runningBalance: chargeRunBal,
+        refType: 'invoice_charge',
+        refId: invoice.id,
+        createdAt: new Date().toISOString()
+      });
+    });
 
     // 3. Insert credit ledger entry if payment received
     if (totRec > 0) {
@@ -433,54 +489,48 @@ function AppShell() {
 
   const reverseInvoiceForVoid = (prev: AppState, invoice: Invoice, reason: string): AppState => {
     if (invoice.isVoid) return prev;
-    const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
-    const net = invoice.totalAmount - totRec;
     const now = new Date().toISOString();
     const todayStr = now.split('T')[0];
 
     const party = prev.parties.find((p) => p.id === invoice.customerId);
     const curBal = party?.currentBalance ?? invoice.newBalance;
-    const newBal = curBal - net;
 
-    // Reversal rows, newest-first (payment reversal, then sale reversal),
-    // mirroring the server void_invoice() function.
-    const reversals: LedgerEntry[] = [];
-    if (totRec > 0) {
-      reversals.push({
-        id: `led-void-${Date.now()}-p`,
-        partyId: invoice.customerId,
-        partyType: 'customer',
+    // Reverse EVERY posted (non-void) ledger row of this invoice, newest
+    // first — sale, charge and payment rows alike — mirroring the server
+    // void_invoice(). The originals are marked void; the reversal rows
+    // carry the correction so the audit trail stays intact.
+    const posted = prev.ledgerEntries
+      .filter((e) => e.refId === invoice.id && !e.isVoid)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+
+    let bal = curBal;
+    const reversals: LedgerEntry[] = posted.map((row, i) => {
+      bal = Math.round(bal - (row.debit || 0) + (row.credit || 0));
+      return {
+        id: `led-void-${Date.now()}-${i}`,
+        partyId: row.partyId,
+        partyType: row.partyType,
         entryDate: todayStr,
-        detail: `VOID reversal (${reason}): payment ${invoice.invoiceNumber}`,
-        detailUrdu: `وائڈ واپسی (${reason}): وصولی ${invoice.invoiceNumber}`,
-        folioNo: invoice.invoiceNumber,
-        debit: totRec,
-        credit: 0,
-        runningBalance: curBal + totRec,
-        refType: 'invoice_payment',
+        detail: `VOID reversal (${reason}): ${row.detail}`,
+        detailUrdu: `وائڈ واپسی (${reason}): ${row.detailUrdu || row.detail}`,
+        folioNo: row.folioNo,
+        debit: row.credit || 0,
+        credit: row.debit || 0,
+        runningBalance: bal,
+        refType: row.refType,
         refId: invoice.id,
         createdAt: now,
-      });
-    }
-    reversals.push({
-      id: `led-void-${Date.now()}-s`,
-      partyId: invoice.customerId,
-      partyType: 'customer',
-      entryDate: todayStr,
-      detail: `VOID reversal (${reason}): sale ${invoice.invoiceNumber}`,
-      detailUrdu: `وائڈ واپسی (${reason}): فروخت ${invoice.invoiceNumber}`,
-      folioNo: invoice.invoiceNumber,
-      debit: 0,
-      credit: invoice.totalAmount,
-      runningBalance: newBal,
-      refType: 'invoice',
-      refId: invoice.id,
-      mandiRate: invoice.mandiRatePer40kg,
-      rate: invoice.saleRatePer40kg,
-      weightKg: invoice.netWeightKg,
-      createdAt: now,
+      };
     });
+    const newBal = bal;
 
+    const voidedIds = new Set(posted.map((r) => r.id));
+    const ledgerEntries = [
+      ...prev.ledgerEntries.map((e) => (voidedIds.has(e.id) ? { ...e, isVoid: true } : e)),
+      ...reversals,
+    ];
+
+    const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
     const updatedParties = prev.parties.map((p) =>
       p.id === invoice.customerId ? { ...p, currentBalance: newBal } : p
     );
@@ -511,7 +561,7 @@ function AppShell() {
       invoices: prev.invoices.map((i) =>
         i.id === invoice.id ? { ...i, isVoid: true, voidReason: reason } : i
       ),
-      ledgerEntries: [...prev.ledgerEntries, ...reversals],
+      ledgerEntries,
       dayClosing: updatedDayClosing,
       inventory: updatedInventory,
     };
@@ -706,6 +756,52 @@ function AppShell() {
       };
     });
     void persist('insert', 'receipt_voids', { id: receiptId, receiptId, reason: voidReason });
+  };
+
+  // 2c. EDIT A LEDGER ROW (customer + supplier khata) — date/narration are
+  // always editable; amounts only on manual rows (opening / adjustment /
+  // journal). Document-posted rows keep their amounts because the source
+  // document owns them (the edit_ledger_entry RPC enforces the same rule
+  // server-side and recomputes the running-balance chain there).
+  const handleEditLedgerEntry = (
+    entryId: string,
+    patch: { entryDate: string; detail: string; detailUrdu: string; debit: number; credit: number }
+  ) => {
+    const s = stateRef.current;
+    const entry = s.ledgerEntries.find((e) => e.id === entryId);
+    if (!entry || entry.isVoid) return;
+    const DOC_TYPES = ['invoice', 'invoice_payment', 'invoice_charge', 'purchase', 'receipt'];
+    if (
+      DOC_TYPES.includes(entry.refType) &&
+      (Math.round(patch.debit) !== Math.round(entry.debit || 0) ||
+        Math.round(patch.credit) !== Math.round(entry.credit || 0))
+    ) {
+      return; // UI guards this; the server RPC enforces it too.
+    }
+    setAppState((prev) => {
+      const mapped = prev.ledgerEntries.map((e) =>
+        e.id === entryId ? { ...e, ...patch } : e
+      );
+      const { entries, finalBalance } = recomputePartyChain(mapped, entry.partyId);
+      let parties = prev.parties.map((p) =>
+        p.id === entry.partyId ? { ...p, currentBalance: finalBalance } : p
+      );
+      if (entry.refType === 'opening') {
+        const ob = Math.round((patch.debit || 0) - (patch.credit || 0));
+        parties = parties.map((p) =>
+          p.id === entry.partyId ? { ...p, openingBalance: ob } : p
+        );
+      }
+      return { ...prev, parties, ledgerEntries: entries };
+    });
+    void persist('insert', 'ledger_edits', {
+      id: entryId,
+      entryId,
+      ...patch,
+      refId: entry.refId,
+      refType: entry.refType,
+      partyId: entry.partyId,
+    });
   };
 
   // 3. SAVE SUPPLIER PURCHASE & UPDATE INVENTORY & CASH
@@ -1313,6 +1409,7 @@ function AppShell() {
             parties={appState.parties}
             ledgerEntries={appState.ledgerEntries}
             invoices={appState.invoices}
+            currentRole={role}
             language={appState.language}
             onOpenReceiptModal={(partyId) => {
               setReceiptPreselectedPartyId(partyId);
@@ -1321,6 +1418,7 @@ function AppShell() {
             onAddParty={handleAddParty}
             onUpdateParty={handleUpdateParty}
             onDeleteParty={handleDeleteParty}
+            onEditLedgerEntry={handleEditLedgerEntry}
           />
         )}
 
@@ -1372,6 +1470,7 @@ function AppShell() {
             onAddParty={handleAddParty}
             onUpdateParty={handleUpdateParty}
             onDeleteParty={handleDeleteParty}
+            onEditLedgerEntry={handleEditLedgerEntry}
           />
         )}
 

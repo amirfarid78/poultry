@@ -62,8 +62,10 @@ const TABLE_STATE_KEY: Record<string, keyof AppState> = {
   journal_entries: 'generalEntries',
   // Void pseudo-tables map back to their document collections so pending
   // voids keep the optimistic local state until the server replays them.
+  // ledger_edits map to ledgerEntries for the same reason.
   invoice_voids: 'invoices',
   receipt_voids: 'receipts',
+  ledger_edits: 'ledgerEntries',
 };
 
 function pendingIdsByTable(pending: OutboxEntry[]): Record<string, Set<string>> {
