@@ -187,6 +187,11 @@ export const POSView: React.FC<POSViewProps> = ({
 
   // Voice Input & Speech Dictation State
   const [isListening, setIsListening] = useState(false);
+  // Whether this browser can do on-device speech recognition at all
+  // (missing on iPhone Safari and in-app browsers like WhatsApp/Facebook).
+  const speechSupported =
+    typeof window !== 'undefined' &&
+    !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
   const [speechTranscript, setSpeechTranscript] = useState('');
   const [speechFeedback, setSpeechFeedback] = useState<string | null>(null);
 
@@ -306,11 +311,11 @@ export const POSView: React.FC<POSViewProps> = ({
     if (!SpeechRecognition) {
       // If browser doesn't expose speech recognition, provide helpful feedback
       setSpeechFeedback(
-        isUrdu 
-          ? 'براہ کرم نیچے دیے گئے ون-ٹچ سیمپل وائس بٹن استعمال کریں۔' 
-          : 'Microphone recognition unavailable in this browser. Use quick voice test chips below.'
+        isUrdu
+          ? 'اس براؤزر میں وائس سپورٹ نہیں ہے۔ کروم (Android) میں کھولیں۔'
+          : 'Voice input is not supported in this browser. Please open the app in Chrome on Android.'
       );
-      setTimeout(() => setSpeechFeedback(null), 4000);
+      setTimeout(() => setSpeechFeedback(null), 5000);
       return;
     }
 
@@ -334,8 +339,8 @@ export const POSView: React.FC<POSViewProps> = ({
       recognition.onerror = (err: any) => {
         console.warn('Speech error:', err);
         setIsListening(false);
-        setSpeechFeedback(isUrdu ? 'مائیک کی آواز موصول نہیں ہوئی۔ نیچے فوری بٹن دبائیں۔' : 'Voice input timed out.');
-        setTimeout(() => setSpeechFeedback(null), 3000);
+        setSpeechFeedback(isUrdu ? 'مائیک کی آواز موصول نہیں ہوئی۔ مائیک کی اجازت دیں اور دوبارہ کوشش کریں۔' : 'Could not hear you. Allow microphone access and try again.');
+        setTimeout(() => setSpeechFeedback(null), 4000);
       };
 
       recognition.onend = () => {
@@ -631,16 +636,27 @@ export const POSView: React.FC<POSViewProps> = ({
             className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition shadow-sm border ${
               isListening
                 ? 'bg-red-600 text-white border-red-700 animate-pulse'
-                : 'bg-purple-600 hover:bg-purple-700 text-white border-purple-700'
+                : speechSupported
+                  ? 'bg-purple-600 hover:bg-purple-700 text-white border-purple-700'
+                  : 'bg-slate-300 text-slate-500 border-slate-400 cursor-not-allowed'
             }`}
-            title={isUrdu ? 'بول کر انوائس بنائیں' : 'Voice Input / Dictation'}
+            title={
+              speechSupported
+                ? (isUrdu ? 'بول کر انوائس بنائیں' : 'Voice Input / Dictation')
+                : (isUrdu ? 'اس براؤزر میں وائس سپورٹ نہیں — کروم میں کھولیں' : 'Voice not supported in this browser — open in Chrome')
+            }
           >
             {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
             <span>
-              {isListening 
-                ? (isUrdu ? 'مائیک سن رہا ہے...' : 'Listening...') 
+              {isListening
+                ? (isUrdu ? 'مائیک سن رہا ہے...' : 'Listening...')
                 : (isUrdu ? 'بول کر انوائس بنائیں (Voice)' : 'Voice POS Voice')}
             </span>
+            {!speechSupported && !isListening && (
+              <span className="text-[9px] font-bold bg-slate-500 text-white px-1.5 py-0.5 rounded">
+                {isUrdu ? 'غیر فعال' : 'OFF'}
+              </span>
+            )}
           </button>
 
           <button
