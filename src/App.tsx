@@ -149,7 +149,9 @@ function AppShell() {
     if (typeof navigator !== 'undefined' && !navigator.onLine) return;
     try {
       const remote = await fetchAll(supabase);
-      const pending = await peekOutbox().catch(() => []);
+      // Include quarantined entries: an unapplied local change is still the
+      // freshest known state, so it must keep winning over stale server rows.
+      const pending = await peekOutbox(true).catch(() => []);
       const next = reconcileState(stateRef.current, remote, pending);
       stateRef.current = next;
       setAppState(next);
@@ -237,15 +239,23 @@ function AppShell() {
   };
 
   const handleUpdateParty = (updatedParty: Party) => {
+    // Compute the merged party OUTSIDE the updater: the opening-balance
+    // delta shifts currentBalance, and the *merged* party (not the raw
+    // modal payload) is what must reach the server — persisting the raw
+    // payload would write a stale current_balance and corrupt the server's
+    // balance chain.
+    const s0 = stateRef.current;
+    const old0 = s0.parties.find((p) => p.id === updatedParty.id);
+    const delta0 = old0 ? updatedParty.openingBalance - old0.openingBalance : 0;
+    const merged0: Party = old0
+      ? { ...updatedParty, currentBalance: old0.currentBalance + delta0 }
+      : updatedParty;
     setAppState((prev) => {
-      const old = prev.parties.find((p) => p.id === updatedParty.id);
       // Opening-balance edits must flow into the khata: shift the running
       // balances of every entry for this party by the delta so the chain
       // stays truthful, and refresh the opening entry itself.
-      const delta = old ? updatedParty.openingBalance - old.openingBalance : 0;
-      const mergedParty: Party = old
-        ? { ...updatedParty, currentBalance: old.currentBalance + delta }
-        : updatedParty;
+      const delta = delta0;
+      const mergedParty: Party = merged0;
 
       let ledgerEntries = prev.ledgerEntries;
       if (delta !== 0) {
@@ -298,7 +308,7 @@ function AppShell() {
         ledgerEntries,
       };
     });
-    persistIfUuid('update', 'parties', updatedParty);
+    persistIfUuid('update', 'parties', merged0);
   };
 
   const handleDeleteParty = (partyId: string) => {
@@ -613,7 +623,9 @@ function AppShell() {
     const voidReason = reason || (s.language === 'ur' ? 'صارف نے حذف کیا' : 'Deleted by user');
     setAppState((prev) => reverseInvoiceForVoid(prev, invoice, voidReason));
     // Void FIRST so the outbox replays it before anything that follows.
-    void persist('insert', 'invoice_voids', { id: invoiceId, invoiceId, reason: voidReason });
+    // partyId lets the reconciler keep the local party balance until the
+    // void RPC lands on the server.
+    void persist('insert', 'invoice_voids', { id: invoiceId, invoiceId, reason: voidReason, partyId: invoice.customerId });
     persistInvoiceStock(invoice, 1);
   };
 
@@ -628,7 +640,7 @@ function AppShell() {
         : `Edited — reissued as ${updatedInvoice.invoiceNumber}`;
     const fresh = withUuid(updatedInvoice);
     setAppState((prev) => applyInvoiceToState(reverseInvoiceForVoid(prev, current, voidReason), fresh));
-    void persist('insert', 'invoice_voids', { id: current.id, invoiceId: current.id, reason: voidReason });
+    void persist('insert', 'invoice_voids', { id: current.id, invoiceId: current.id, reason: voidReason, partyId: current.customerId });
     void persist('insert', 'invoices', fresh);
     // Single stock upsert: restore the old sale's stock, deduct the new one.
     const broiler = s.inventory.find(
@@ -755,7 +767,7 @@ function AppShell() {
         dayClosing: updatedDayClosing,
       };
     });
-    void persist('insert', 'receipt_voids', { id: receiptId, receiptId, reason: voidReason });
+    void persist('insert', 'receipt_voids', { id: receiptId, receiptId, reason: voidReason, partyId: receipt.partyId });
   };
 
   // 2c. EDIT A LEDGER ROW (customer + supplier khata) — date/narration are
@@ -794,14 +806,28 @@ function AppShell() {
       }
       return { ...prev, parties, ledgerEntries: entries };
     });
-    void persist('insert', 'ledger_edits', {
-      id: entryId,
-      entryId,
-      ...patch,
-      refId: entry.refId,
-      refType: entry.refType,
-      partyId: entry.partyId,
-    });
+    if (entry.refType === 'opening') {
+      // Opening rows exist only on this device (no server row, no ref_id for
+      // the RPC fallback) — a ledger_edits entry could never apply and would
+      // poison the outbox. The server's source of truth for the opening
+      // balance is parties.opening_balance (the RPC syncs it too), so persist
+      // the party instead.
+      const party = s.parties.find((p) => p.id === entry.partyId);
+      if (party) {
+        const ob = Math.round((patch.debit || 0) - (patch.credit || 0));
+        const updated = { ...party, openingBalance: ob };
+        persistIfUuid('update', 'parties', updated);
+      }
+    } else {
+      void persist('insert', 'ledger_edits', {
+        id: entryId,
+        entryId,
+        ...patch,
+        refId: entry.refId,
+        refType: entry.refType,
+        partyId: entry.partyId,
+      });
+    }
   };
 
   // 3. SAVE SUPPLIER PURCHASE & UPDATE INVENTORY & CASH

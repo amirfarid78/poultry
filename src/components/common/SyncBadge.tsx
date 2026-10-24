@@ -1,6 +1,8 @@
 // Compact sync status badge for the navbar (src/components/common/SyncBadge.tsx).
 // Shows: colored dot + Online/Offline (bilingual), pending write count when > 0
-// (bilingual "N pending"), and a sync-now button (RefreshCw, spins while syncing).
+// (bilingual "N pending"), failed (quarantined) count when > 0 as a tappable
+// red pill that retries them, and a sync-now button (RefreshCw, spins while
+// syncing). The failed pill's tooltip carries the underlying error.
 import { RefreshCw } from 'lucide-react';
 import { useSyncStatus, getSyncEngine } from '../../hooks/useSyncStatus';
 
@@ -20,11 +22,24 @@ export default function SyncBadge({ language }: SyncBadgeProps) {
 
   const onlineLabel = status.isOnline ? (ur ? 'آن لائن' : 'Online') : ur ? 'آف لائن' : 'Offline';
   const pendingLabel = ur ? `${status.pendingCount} زیر التواء` : `${status.pendingCount} pending`;
+  const deadLabel = ur ? `${status.deadCount} ناکام` : `${status.deadCount} failed`;
   const syncTitle = ur ? 'ابھی سنک کریں' : 'Sync now';
+  const retryTitle = status.deadError
+    ? ur
+      ? `خرابی: ${status.deadError} — دوبارہ کوشش کے لیے دبائیں`
+      : `Failed: ${status.deadError} — tap to retry`
+    : ur
+      ? 'ناکام تبدیلیاں دوبارہ بھیجیں'
+      : 'Retry failed changes';
 
   const handleSync = () => {
     const engine = getSyncEngine();
     if (engine) void engine.syncNow();
+  };
+
+  const handleRetryFailed = () => {
+    const engine = getSyncEngine();
+    if (engine) void engine.retryFailed();
   };
 
   return (
@@ -35,6 +50,18 @@ export default function SyncBadge({ language }: SyncBadgeProps) {
         <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800">
           {pendingLabel}
         </span>
+      )}
+      {status.deadCount > 0 && (
+        <button
+          type="button"
+          onClick={handleRetryFailed}
+          disabled={status.isSyncing}
+          title={retryTitle}
+          aria-label={retryTitle}
+          className="rounded-full bg-red-100 px-1.5 py-0.5 text-[11px] font-semibold text-red-800 transition hover:bg-red-200 disabled:opacity-60"
+        >
+          {deadLabel}
+        </button>
       )}
       <button
         type="button"

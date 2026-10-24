@@ -24,7 +24,20 @@ export interface OutboxEntry {
   created_at: string;
   attempts: number;
   last_error: string | null;
+  /**
+   * Quarantined after MAX_SYNC_ATTEMPTS consecutive failures: no longer
+   * retried automatically, excluded from the pending count (so one poison
+   * entry can't wedge the whole queue or block the post-sync refresh), and
+   * surfaced in the UI with its error + a manual retry action.
+   */
+  dead?: boolean;
 }
+
+/**
+ * Consecutive replay failures before an entry is quarantined as dead.
+ * At the 30s sync tick this is ~4 minutes of continuous failure.
+ */
+export const MAX_SYNC_ATTEMPTS = 8;
 
 export interface CacheEntry {
   key: string;
@@ -89,21 +102,61 @@ export async function enqueueWrite(
     created_at: new Date().toISOString(),
     attempts: 0,
     last_error: null,
+    dead: false,
   };
   await db.put('mm_outbox', entry);
   return entry.id;
 }
 
-/** Number of writes still waiting to be replayed. */
+/** Number of writes still waiting to be replayed (dead entries excluded). */
 export async function getPendingCount(): Promise<number> {
   const db = await getDb();
-  return db.count('mm_outbox');
+  const all = await db.getAll('mm_outbox');
+  return all.filter((e) => !e.dead).length;
 }
 
-/** All queued writes, oldest first. */
-export async function peekOutbox(): Promise<OutboxEntry[]> {
+/**
+ * All queued writes, oldest first.
+ * @param includeDead when true, quarantined entries are included too —
+ *   the reconciler needs them so unapplied local changes keep winning
+ *   over stale server rows even after quarantine.
+ */
+export async function peekOutbox(includeDead = false): Promise<OutboxEntry[]> {
   const db = await getDb();
-  return db.getAllFromIndex('mm_outbox', 'by-created');
+  const all = await db.getAllFromIndex('mm_outbox', 'by-created');
+  return includeDead ? all : all.filter((e) => !e.dead);
+}
+
+/** Quarantined entries, oldest first (for the failure UI). */
+export async function peekDeadEntries(): Promise<OutboxEntry[]> {
+  const db = await getDb();
+  const all = await db.getAllFromIndex('mm_outbox', 'by-created');
+  return all.filter((e) => e.dead);
+}
+
+/** Number of quarantined entries. */
+export async function getDeadCount(): Promise<number> {
+  const db = await getDb();
+  const all = await db.getAll('mm_outbox');
+  return all.filter((e) => e.dead).length;
+}
+
+/**
+ * Move quarantined entries back to the live queue (manual "retry failed").
+ * Returns how many were revived.
+ */
+export async function reviveDeadEntries(): Promise<number> {
+  const db = await getDb();
+  const tx = db.transaction('mm_outbox', 'readwrite');
+  const dead = (await tx.store.getAll()).filter((e) => e.dead);
+  for (const e of dead) {
+    e.dead = false;
+    e.attempts = 0;
+    e.last_error = null;
+    await tx.store.put(e);
+  }
+  await tx.done;
+  return dead.length;
 }
 
 /** Store a snapshot (e.g. last good fetchAll) for offline bootstrap. */
@@ -129,13 +182,16 @@ export async function removeOutbox(id: string): Promise<void> {
   await db.delete('mm_outbox', id);
 }
 
-/** Record a failed replay attempt (entry stays queued for the next run). */
+/** Record a failed replay attempt. Quarantines the entry after
+ * MAX_SYNC_ATTEMPTS consecutive failures so one poison entry can't wedge
+ * the queue forever (it stays visible via peekDeadEntries for manual retry). */
 export async function markOutboxError(id: string, msg: string): Promise<void> {
   const db = await getDb();
   const entry = await db.get('mm_outbox', id);
   if (!entry) return;
   entry.attempts += 1;
   entry.last_error = msg;
+  if (entry.attempts >= MAX_SYNC_ATTEMPTS) entry.dead = true;
   await db.put('mm_outbox', entry);
 }
 

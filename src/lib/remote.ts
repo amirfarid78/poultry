@@ -60,38 +60,109 @@ const TABLE_STATE_KEY: Record<string, keyof AppState> = {
   chart_of_accounts: 'accounts',
   employees: 'employees',
   journal_entries: 'generalEntries',
-  // Void pseudo-tables map back to their document collections so pending
-  // voids keep the optimistic local state until the server replays them.
-  // ledger_edits map to ledgerEntries for the same reason.
+  // Void pseudo-tables map back to their document collections so a pending
+  // void keeps the local voided doc, its ledger rows and the party balance
+  // until the server RPC applies it. ledger_edits map to ledgerEntries so a
+  // pending edit keeps the local edited row.
   invoice_voids: 'invoices',
   receipt_voids: 'receipts',
   ledger_edits: 'ledgerEntries',
 };
 
-function pendingIdsByTable(pending: OutboxEntry[]): Record<string, Set<string>> {
-  const map: Record<string, Set<string>> = {};
-  for (const e of pending) {
-    const key = TABLE_STATE_KEY[e.table];
-    if (!key) continue;
-    const id = (e.payload as { id?: unknown })?.id;
-    if (typeof id !== 'string') continue;
-    (map[key] ??= new Set<string>()).add(id);
+interface PendingOps {
+  /**
+   * Entity ids with an unpushed insert/update/upsert/void/edit: the local
+   * row is fresher than whatever the server holds, so it wins the merge
+   * until the outbox entry replays.
+   */
+  pending: Set<string>;
+  /**
+   * Entity ids with an unpushed hard delete: the server row must stay gone
+   * instead of being resurrected by the refresh.
+   */
+  deleted: Set<string>;
+}
+
+const strOrNull = (v: unknown): string | null =>
+  typeof v === 'string' && v ? v : null;
+
+/**
+ * The entity id an outbox entry acts on. The void/edit pseudo-tables carry
+ * it under their own payload key (invoiceId / receiptId / entryId), not `id`.
+ */
+function entityIdFor(entry: OutboxEntry): string | null {
+  const p = entry.payload as Record<string, unknown>;
+  switch (entry.table) {
+    case 'invoice_voids':
+      return strOrNull(p.invoiceId) ?? strOrNull(p.id);
+    case 'receipt_voids':
+      return strOrNull(p.receiptId) ?? strOrNull(p.id);
+    case 'ledger_edits':
+      return strOrNull(p.entryId) ?? strOrNull(p.id);
+    default:
+      return strOrNull(p.id);
   }
-  return map;
 }
 
 /**
- * Server-wins merge. Server collections replace local ones, except locally
- * created docs still sitting in the outbox (not yet replayed).
- * Ledger entries are special: DB triggers own them, so a local entry whose
- * refId now exists on the server is superseded and dropped.
+ * Group pending outbox entries (live AND quarantined — an unapplied local
+ * change stays the freshest known state either way) by app-state collection.
+ *
+ * Also collects doc ids with a pending void: until the void RPC lands, the
+ * server's ledger rows for that doc are stale, so the local voided originals
+ * + reversal rows win, and the voided doc + its party balance stay local.
+ */
+function pendingByTable(pending: OutboxEntry[]): {
+  byTable: Record<string, PendingOps>;
+  voidRefIds: Set<string>;
+} {
+  const byTable: Record<string, PendingOps> = {};
+  const voidRefIds = new Set<string>();
+  const ops = (key: string): PendingOps =>
+    (byTable[key] ??= { pending: new Set<string>(), deleted: new Set<string>() });
+  for (const e of pending) {
+    const id = entityIdFor(e);
+    if (!id) continue;
+    if (e.table === 'invoice_voids' || e.table === 'receipt_voids') {
+      voidRefIds.add(id);
+      const key = TABLE_STATE_KEY[e.table];
+      if (key) ops(key).pending.add(id);
+      // The void owns the party balance until the server applies it.
+      const partyId = strOrNull((e.payload as Record<string, unknown>).partyId);
+      if (partyId) ops('parties').pending.add(partyId);
+      continue;
+    }
+    const key = TABLE_STATE_KEY[e.table];
+    if (!key) continue;
+    if (e.op === 'delete') ops(key).deleted.add(id);
+    else ops(key).pending.add(id);
+  }
+  return { byTable, voidRefIds };
+}
+
+/**
+ * Server-wins merge that respects unpushed local writes.
+ *
+ * The old version only protected locally-created docs that don't exist on
+ * the server yet — any update/delete/void/edit of an EXISTING doc was
+ * silently clobbered by the stale server row on every refresh ("old data
+ * reappears"). Now:
+ *  - server row with a pending hard delete  -> dropped (stays deleted)
+ *  - server row with a pending write        -> local row wins (it's fresher)
+ *  - otherwise                              -> server row wins (unchanged)
+ *  - local-only docs still in the outbox     -> kept (unchanged)
+ *
+ * When the outbox is empty this behaves exactly like the old server-wins
+ * merge; the new behavior only kicks in for writes that haven't reached
+ * the server yet.
  */
 export function reconcileState(
   prev: AppState,
   remote: Partial<AppState>,
   pending: OutboxEntry[]
 ): AppState {
-  const byTable = pendingIdsByTable(pending);
+  const { byTable, voidRefIds } = pendingByTable(pending);
+  const EMPTY: PendingOps = { pending: new Set<string>(), deleted: new Set<string>() };
   const merge = <T,>(
     local: T[],
     server: T[] | undefined,
@@ -99,12 +170,26 @@ export function reconcileState(
     getId: (r: T) => string
   ): T[] => {
     if (!server) return local;
-    const pids = byTable[stateKey];
+    const p = byTable[stateKey] ?? EMPTY;
     const serverIds = new Set(server.map(getId));
-    const kept = pids
-      ? local.filter((r) => pids.has(getId(r)) && !serverIds.has(getId(r)))
-      : [];
-    return [...server, ...kept];
+    const localById = new Map<string, T>();
+    for (const r of local) localById.set(getId(r), r);
+    const out: T[] = [];
+    for (const s of server) {
+      const id = getId(s);
+      if (p.deleted.has(id)) continue;
+      const l = localById.get(id);
+      if (l !== undefined && p.pending.has(id)) {
+        out.push(l);
+        continue;
+      }
+      out.push(s);
+    }
+    for (const r of local) {
+      const id = getId(r);
+      if (!serverIds.has(id) && p.pending.has(id) && !p.deleted.has(id)) out.push(r);
+    }
+    return out;
   };
   const byId = <T extends { id: string }>(r: T) => r.id;
 
@@ -127,15 +212,34 @@ export function reconcileState(
   };
 
   if (remote.ledgerEntries) {
+    // Ledger rows are trigger-owned, so a local optimistic row whose refId
+    // now exists on the server is normally superseded and dropped — EXCEPT
+    // when the doc has a pending void (the server rows are pre-void and
+    // stale, the local voided originals + reversals are the truth) or the
+    // row itself has a pending ledger edit (the local edited row is fresher).
+    const p = byTable['ledgerEntries'] ?? EMPTY;
+    const serverIds = new Set(remote.ledgerEntries.map((e) => e.id));
     const serverDocIds = new Set<string>();
     for (const e of remote.ledgerEntries) if (e.refId) serverDocIds.add(e.refId);
-    const serverIds = new Set(remote.ledgerEntries.map((e) => e.id));
-    next.ledgerEntries = [
-      ...remote.ledgerEntries,
-      ...prev.ledgerEntries.filter(
-        (e) => !serverIds.has(e.id) && !(e.refId && serverDocIds.has(e.refId))
-      ),
-    ];
+    const localById = new Map(prev.ledgerEntries.map((e) => [e.id, e]));
+    const out: typeof prev.ledgerEntries = [];
+    for (const s of remote.ledgerEntries) {
+      if (s.refId && voidRefIds.has(s.refId)) continue;
+      const l = localById.get(s.id);
+      if (l && p.pending.has(s.id)) {
+        out.push(l);
+        continue;
+      }
+      out.push(s);
+    }
+    const kept = prev.ledgerEntries.filter(
+      (e) =>
+        !serverIds.has(e.id) &&
+        !p.deleted.has(e.id) &&
+        (!(e.refId && serverDocIds.has(e.refId)) ||
+          (e.refId != null && voidRefIds.has(e.refId)))
+    );
+    next.ledgerEntries = [...out, ...kept];
   }
   return next;
 }

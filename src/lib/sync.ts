@@ -14,6 +14,11 @@
 //     entry already exists, so it is treated as already synced and dropped.
 //   * One failing entry does NOT stop the run: attempts/last_error are
 //     recorded and the engine continues with the rest.
+//   * An entry failing MAX_SYNC_ATTEMPTS times in a row is quarantined
+//     ("dead"): it leaves the live queue so one poison entry can't wedge
+//     syncing forever, and the UI surfaces it with its error plus a manual
+//     retry. Dead entries still shield their local changes in the
+//     reconciler (see remote.ts) until they replay.
 //
 // Conflict rule (documented): last-write-wins with the SERVER as the source
 // of truth. Replay upserts overwrite the server row for the same key, so the
@@ -34,6 +39,9 @@ import type { GeneralJournalEntry } from '../types';
 import {
   peekOutbox,
   getPendingCount,
+  peekDeadEntries,
+  getDeadCount,
+  reviveDeadEntries,
   removeOutbox,
   markOutboxError,
   type OutboxEntry,
@@ -43,6 +51,10 @@ export interface SyncStatus {
   isOnline: boolean;
   isSyncing: boolean;
   pendingCount: number;
+  /** Quarantined entries (failed MAX_SYNC_ATTEMPTS times, awaiting manual retry). */
+  deadCount: number;
+  /** First quarantined entry's error, for the failure UI. */
+  deadError: string | null;
   lastSyncAt: string | null;
   lastError: string | null;
 }
@@ -51,6 +63,8 @@ export interface SyncEngine {
   getStatus(): SyncStatus;
   subscribe(fn: (status: SyncStatus) => void): () => void;
   syncNow(): Promise<void>;
+  /** Move quarantined entries back to the live queue and sync immediately. */
+  retryFailed(): Promise<void>;
 }
 
 const SYNC_INTERVAL_MS = 30_000;
@@ -191,6 +205,8 @@ export function startSyncEngine(db: SupabaseClient): SyncEngine {
     isOnline: typeof navigator === 'undefined' ? true : navigator.onLine,
     isSyncing: false,
     pendingCount: 0,
+    deadCount: 0,
+    deadError: null,
     lastSyncAt: null,
     lastError: null,
   };
@@ -212,9 +228,17 @@ export function startSyncEngine(db: SupabaseClient): SyncEngine {
 
   const refreshPending = async () => {
     try {
-      setState({ pendingCount: await getPendingCount() });
+      const [pendingCount, dead] = await Promise.all([
+        getPendingCount(),
+        peekDeadEntries(),
+      ]);
+      setState({
+        pendingCount,
+        deadCount: dead.length,
+        deadError: dead.length > 0 ? dead[0].last_error : null,
+      });
     } catch {
-      /* IndexedDB unavailable; leave count as-is */
+      /* IndexedDB unavailable; leave counts as-is */
     }
   };
 
@@ -239,8 +263,14 @@ export function startSyncEngine(db: SupabaseClient): SyncEngine {
           // continue with the rest of the queue
         }
       }
+      const [pendingCount, dead] = await Promise.all([
+        getPendingCount().catch(() => state.pendingCount),
+        peekDeadEntries().catch(() => [] as OutboxEntry[]),
+      ]);
       setState({
-        pendingCount: await getPendingCount().catch(() => state.pendingCount),
+        pendingCount,
+        deadCount: dead.length,
+        deadError: dead.length > 0 ? dead[0].last_error : state.deadError,
         lastSyncAt: new Date().toISOString(),
         lastError,
       });
@@ -258,6 +288,15 @@ export function startSyncEngine(db: SupabaseClient): SyncEngine {
       };
     },
     syncNow,
+    retryFailed: async () => {
+      try {
+        await reviveDeadEntries();
+      } catch {
+        /* IndexedDB unavailable; just sync */
+      }
+      await refreshPending();
+      await syncNow();
+    },
   };
 
   if (typeof window !== 'undefined') {
