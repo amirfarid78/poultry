@@ -39,6 +39,33 @@ export interface OutboxEntry {
  */
 export const MAX_SYNC_ATTEMPTS = 8;
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const isUuid = (v: unknown): v is string =>
+  typeof v === 'string' && UUID_RE.test(v);
+
+const strOrNull = (v: unknown): string | null =>
+  typeof v === 'string' && v ? v : null;
+
+/**
+ * The entity id an outbox entry acts on. The void/edit pseudo-tables carry
+ * it under their own payload key (invoiceId / receiptId / entryId), not `id`.
+ */
+export function outboxEntityId(entry: OutboxEntry): string | null {
+  const p = entry.payload as Record<string, unknown>;
+  switch (entry.table) {
+    case 'invoice_voids':
+      return strOrNull(p.invoiceId) ?? strOrNull(p.id);
+    case 'receipt_voids':
+      return strOrNull(p.receiptId) ?? strOrNull(p.id);
+    case 'ledger_edits':
+      return strOrNull(p.entryId) ?? strOrNull(p.id);
+    default:
+      return strOrNull(p.id);
+  }
+}
+
 export interface CacheEntry {
   key: string;
   data: unknown;

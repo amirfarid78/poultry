@@ -315,18 +315,21 @@ function AppShell() {
     const s = stateRef.current;
     const party = s.parties.find((p) => p.id === partyId);
     if (!party) return false;
-    // Accounting safety: never delete a party that has documents. The user
-    // must void those first — the DB foreign keys would reject it anyway.
+    // Accounting safety: never delete a party that has documents. Voided
+    // invoices/receipts and cancelled orders count too — the DB foreign keys
+    // are NO ACTION, so the server keeps those rows forever (audit trail) and
+    // would reject the DELETE. Refusing upfront beats a poisoned outbox entry
+    // plus ledger rows that resurrect on the next refresh.
     const hasDocs =
-      s.invoices.some((i) => i.customerId === partyId && !i.isVoid) ||
-      s.receipts.some((r) => r.partyId === partyId && !r.isVoid) ||
+      s.invoices.some((i) => i.customerId === partyId) ||
+      s.receipts.some((r) => r.partyId === partyId) ||
       s.purchases.some((p) => p.supplierId === partyId) ||
-      s.orders.some((o) => o.customerId === partyId && o.status !== 'cancelled');
+      s.orders.some((o) => o.customerId === partyId);
     if (hasDocs) {
       alert(
         s.language === 'ur'
-          ? `”${party.urduName || party.name}“ کے کھاتے میں لین دین موجود ہے۔ پہلے ان کی انوائسز/رسیدیں وائڈ کریں، پھر کھاتہ حذف کریں۔`
-          : `"${party.name}" has transactions on record. Void its invoices/receipts first, then delete the account.`
+          ? `”${party.urduName || party.name}“ کے کھاتے میں ریکارڈ موجود ہے (وائڈ شدہ سمیت) — ہسٹری والا کھاتہ حذف نہیں ہو سکتا۔`
+          : `"${party.name}" has records on file (including voided ones) — an account with history cannot be deleted.`
       );
       return false;
     }
@@ -641,7 +644,9 @@ function AppShell() {
     const fresh = withUuid(updatedInvoice);
     setAppState((prev) => applyInvoiceToState(reverseInvoiceForVoid(prev, current, voidReason), fresh));
     void persist('insert', 'invoice_voids', { id: current.id, invoiceId: current.id, reason: voidReason, partyId: current.customerId });
-    void persist('insert', 'invoices', fresh);
+    // voidsInvoiceId chains the pair in the sync engine: the reissue waits
+    // until the void has replayed, so a failed void can never double-count.
+    void persist('insert', 'invoices', { ...fresh, voidsInvoiceId: current.id });
     // Single stock upsert: restore the old sale's stock, deduct the new one.
     const broiler = s.inventory.find(
       (i) => i.category === 'broiler' && (i.id === 'inv-item-1' || i.code === 'BR-LIVE')

@@ -5,15 +5,12 @@
 // server as the source of truth (DB triggers own ledger posting and balances).
 import type { AppState } from '../services/store';
 import type { OutboxEntry, OutboxOp } from './offline';
-import { enqueueWrite, peekOutbox, saveSnapshot } from './offline';
+import { enqueueWrite, peekOutbox, saveSnapshot, isUuid, outboxEntityId } from './offline';
 import { getSyncEngine } from './sync';
 import type { OutboxTable } from './db';
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export const isUuid = (v: unknown): v is string =>
-  typeof v === 'string' && UUID_RE.test(v);
+// Re-exported for existing importers (App.tsx).
+export { isUuid };
 
 /** Guarantee a UUID primary key for a newly created doc (views use local id schemes). */
 export function withUuid<T extends { id: string }>(doc: T): T {
@@ -83,27 +80,6 @@ interface PendingOps {
   deleted: Set<string>;
 }
 
-const strOrNull = (v: unknown): string | null =>
-  typeof v === 'string' && v ? v : null;
-
-/**
- * The entity id an outbox entry acts on. The void/edit pseudo-tables carry
- * it under their own payload key (invoiceId / receiptId / entryId), not `id`.
- */
-function entityIdFor(entry: OutboxEntry): string | null {
-  const p = entry.payload as Record<string, unknown>;
-  switch (entry.table) {
-    case 'invoice_voids':
-      return strOrNull(p.invoiceId) ?? strOrNull(p.id);
-    case 'receipt_voids':
-      return strOrNull(p.receiptId) ?? strOrNull(p.id);
-    case 'ledger_edits':
-      return strOrNull(p.entryId) ?? strOrNull(p.id);
-    default:
-      return strOrNull(p.id);
-  }
-}
-
 /**
  * Group pending outbox entries (live AND quarantined — an unapplied local
  * change stays the freshest known state either way) by app-state collection.
@@ -121,14 +97,15 @@ function pendingByTable(pending: OutboxEntry[]): {
   const ops = (key: string): PendingOps =>
     (byTable[key] ??= { pending: new Set<string>(), deleted: new Set<string>() });
   for (const e of pending) {
-    const id = entityIdFor(e);
+    const id = outboxEntityId(e);
     if (!id) continue;
     if (e.table === 'invoice_voids' || e.table === 'receipt_voids') {
       voidRefIds.add(id);
       const key = TABLE_STATE_KEY[e.table];
       if (key) ops(key).pending.add(id);
       // The void owns the party balance until the server applies it.
-      const partyId = strOrNull((e.payload as Record<string, unknown>).partyId);
+      const p = e.payload as Record<string, unknown>;
+      const partyId = typeof p.partyId === 'string' && p.partyId ? p.partyId : null;
       if (partyId) ops('parties').pending.add(partyId);
       continue;
     }
