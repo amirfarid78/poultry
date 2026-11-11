@@ -287,6 +287,15 @@ async function replayOne(
 
 let singleton: SyncEngine | null = null;
 
+/** Set inside startSyncEngine: lets code outside a sync run (persist(),
+ * refreshFromServer) surface a storage/sync failure in the navbar badge. */
+let reportSyncProblem: ((patch: Partial<SyncStatus>) => void) | null = null;
+
+/** Surface a storage/sync failure visibly; no-op before the engine starts. */
+export function noteSyncProblem(message: string): void {
+  reportSyncProblem?.({ lastError: message });
+}
+
 /**
  * Starts (or returns) the process-wide sync engine. Safe to call repeatedly;
  * the first call's client is kept.
@@ -320,6 +329,8 @@ export function startSyncEngine(db: SupabaseClient): SyncEngine {
     emit();
   };
 
+  reportSyncProblem = setState;
+
   const refreshPending = async () => {
     try {
       const [pendingCount, dead] = await Promise.all([
@@ -344,7 +355,18 @@ export function startSyncEngine(db: SupabaseClient): SyncEngine {
     }
     setState({ isSyncing: true, lastError: null });
     try {
-      const entries = await peekOutbox();
+      let entries: OutboxEntry[];
+      try {
+        entries = await peekOutbox();
+      } catch (e) {
+        // IndexedDB unreadable: nothing can replay, and the old code left
+        // no trace of it anywhere. Say so instead of looking synced.
+        setState({
+          lastError: `Sync storage unavailable — changes stay on this device only (${errMsg(e)})`,
+          lastSyncAt: new Date().toISOString(),
+        });
+        return;
+      }
       // Invoice edits enqueue (void old, insert reissue) as a pair: the
       // reissue must never land while its void is still pending, or the
       // server would hold both invoices active (double sale, double ledger

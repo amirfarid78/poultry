@@ -63,6 +63,18 @@ export default function SyncBadge({ language }: SyncBadgeProps) {
           {deadLabel}
         </button>
       )}
+      {status.deadCount === 0 && status.lastError && (
+        <button
+          type="button"
+          onClick={handleSync}
+          disabled={status.isSyncing}
+          title={status.lastError}
+          aria-label={`Sync error: ${status.lastError}`}
+          className="rounded-full bg-red-100 px-1.5 py-0.5 text-[11px] font-semibold text-red-800 transition hover:bg-red-200 disabled:opacity-60"
+        >
+          {ur ? 'سنک خرابی' : 'Sync error'}
+        </button>
+      )}
       <button
         type="button"
         onClick={handleSync}

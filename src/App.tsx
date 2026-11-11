@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   loadSavedState, 
+  loadSeedState,
   saveStateToStorage, 
   AppState 
 } from './services/store';
@@ -52,7 +53,7 @@ import { supabase } from './lib/supabase';
 import { fetchAll, fetchStaffProfiles } from './lib/db';
 import type { StaffProfile } from './types';
 import { peekOutbox } from './lib/offline';
-import { startSyncEngine } from './lib/sync';
+import { startSyncEngine, noteSyncProblem } from './lib/sync';
 import {
   persist,
   persistIfUuid,
@@ -157,7 +158,9 @@ function AppShell() {
       setAppState(next);
       void snapshotState(next).catch(() => {});
     } catch {
-      /* keep local state; will retry on next sync tick */
+      /* keep local state; will retry on next sync tick — but say so: a
+         refresh that fails silently is how stale/demo data stays on screen */
+      noteSyncProblem('Could not refresh from the server — showing the last saved data on this device.');
     }
   }, [session]);
 
@@ -1278,7 +1281,7 @@ function AppShell() {
   // 10. SETTINGS: RESET SEED DATA
   const handleResetSeedData = () => {
     localStorage.removeItem('murgh_mandi_erp_data_v1');
-    setAppState(loadSavedState());
+    setAppState(loadSeedState());
   };
 
   // ============ AUTH GATE ============

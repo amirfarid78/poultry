@@ -835,6 +835,11 @@ export async function updateBusinessSettings(
  * isOffline stay local-only (offline bootstrap cache).
  */
 export async function fetchAll(db: Db): Promise<Partial<AppState>> {
+  // One failing collection used to reject the whole Promise.all and kill the
+  // entire refresh (silently — refreshFromServer swallows it), leaving stale
+  // or demo data on screen, especially on flaky mobile connections. Each
+  // fetch now fails independently: a failed collection is left out of the
+  // result so the merge keeps the local copy of just that collection.
   const [
     parties,
     invoices,
@@ -852,40 +857,42 @@ export async function fetchAll(db: Db): Promise<Partial<AppState>> {
     mandiRates,
     dayClosing,
   ] = await Promise.all([
-    fetchParties(db),
-    fetchInvoices(db),
-    fetchReceipts(db),
-    fetchLedgerEntries(db),
-    fetchPurchases(db),
-    fetchExpenses(db),
-    fetchJournalEntries(db),
-    fetchOrders(db),
-    fetchVehicles(db),
-    fetchTrips(db),
-    fetchProducts(db),
-    fetchAccounts(db),
-    fetchEmployees(db),
-    fetchMandiRates(db, 1),
-    fetchDayClosing(db),
+    fetchParties(db).catch(() => undefined),
+    fetchInvoices(db).catch(() => undefined),
+    fetchReceipts(db).catch(() => undefined),
+    fetchLedgerEntries(db).catch(() => undefined),
+    fetchPurchases(db).catch(() => undefined),
+    fetchExpenses(db).catch(() => undefined),
+    fetchJournalEntries(db).catch(() => undefined),
+    fetchOrders(db).catch(() => undefined),
+    fetchVehicles(db).catch(() => undefined),
+    fetchTrips(db).catch(() => undefined),
+    fetchProducts(db).catch(() => undefined),
+    fetchAccounts(db).catch(() => undefined),
+    fetchEmployees(db).catch(() => undefined),
+    fetchMandiRates(db, 1).catch(() => undefined),
+    fetchDayClosing(db).catch(() => undefined),
   ]);
 
-  const state: Partial<AppState> = {
-    parties,
-    invoices,
-    receipts,
-    ledgerEntries,
-    purchases,
-    expenses,
-    generalEntries,
-    orders,
-    vehicles,
-    trips,
-    inventory,
-    accounts,
-    employees,
-  };
-  if (mandiRates.length > 0) state.todayMandiRate = mandiRates[0].broilerRatePer40kg;
+  const state: Partial<AppState> = {};
+  if (parties !== undefined) state.parties = parties;
+  if (invoices !== undefined) state.invoices = invoices;
+  if (receipts !== undefined) state.receipts = receipts;
+  if (ledgerEntries !== undefined) state.ledgerEntries = ledgerEntries;
+  if (purchases !== undefined) state.purchases = purchases;
+  if (expenses !== undefined) state.expenses = expenses;
+  if (generalEntries !== undefined) state.generalEntries = generalEntries;
+  if (orders !== undefined) state.orders = orders;
+  if (vehicles !== undefined) state.vehicles = vehicles;
+  if (trips !== undefined) state.trips = trips;
+  if (inventory !== undefined) state.inventory = inventory;
+  if (accounts !== undefined) state.accounts = accounts;
+  if (employees !== undefined) state.employees = employees;
+  if (mandiRates !== undefined && mandiRates.length > 0) state.todayMandiRate = mandiRates[0].broilerRatePer40kg;
   if (dayClosing) state.dayClosing = dayClosing;
+  if (Object.keys(state).length === 0) {
+    throw new Error('Could not reach the server — no data could be refreshed.');
+  }
   return state;
 }
 

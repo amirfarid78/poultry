@@ -6,7 +6,7 @@
 import type { AppState } from '../services/store';
 import type { OutboxEntry, OutboxOp } from './offline';
 import { enqueueWrite, peekOutbox, saveSnapshot, isUuid, outboxEntityId } from './offline';
-import { getSyncEngine } from './sync';
+import { getSyncEngine, noteSyncProblem } from './sync';
 import type { OutboxTable } from './db';
 
 // Re-exported for existing importers (App.tsx).
@@ -30,7 +30,9 @@ export async function persist(
     await enqueueWrite(op, table, payload);
     getSyncEngine()?.syncNow().catch(() => {});
   } catch {
-    /* IndexedDB unavailable; localStorage still holds the state */
+    /* IndexedDB unavailable: the change is saved in localStorage only and
+       will never reach the server. Surface it instead of failing silently. */
+    noteSyncProblem('Could not queue this change for sync — it is saved on this device only.');
   }
 }
 

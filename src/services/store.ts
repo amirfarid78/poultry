@@ -805,54 +805,46 @@ export function createBlankState(language: 'en' | 'ur' = 'ur'): AppState {
   };
 }
 
-export function loadSavedState(): AppState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      // Trust what was saved — even empty arrays. Only fall back to seed
-      // values for keys that are entirely missing (old saves).
-      // Normalize invoices saved before extra charges existed.
-      const savedInvoices = (parsed.invoices ?? []) as Invoice[];
-      const invoices = savedInvoices.map((inv) => ({
-        ...inv,
-        charges: Array.isArray(inv.charges) ? inv.charges : [],
-        chargesTotal:
-          typeof inv.chargesTotal === 'number'
-            ? inv.chargesTotal
-            : (Array.isArray(inv.charges) ? inv.charges : []).reduce(
-                (s: number, c: { amount?: number }) => s + (c.amount || 0),
-                0
-              ),
-      }));
-      return {
-        currentRole: parsed.currentRole ?? 'owner',
-        language: parsed.language ?? 'ur',
-        todayMandiRate: parsed.todayMandiRate ?? 0,
-        parties: parsed.parties ?? [],
-        invoices,
-        receipts: parsed.receipts ?? [],
-        ledgerEntries: parsed.ledgerEntries ?? [],
-        purchases: parsed.purchases ?? [],
-        expenses: parsed.expenses ?? [],
-        generalEntries: parsed.generalEntries ?? [],
-        orders: parsed.orders ?? [],
-        vehicles: parsed.vehicles ?? [],
-        trips: parsed.trips ?? [],
-        inventory: parsed.inventory ?? [],
-        accounts: parsed.accounts ?? [],
-        employees: parsed.employees ?? [],
-        dayClosing: parsed.dayClosing ?? createBlankState().dayClosing,
-        isOffline: !navigator.onLine
-      };
-    }
-  } catch (err) {
-    console.error('Error loading stored ERP data:', err);
-  }
+/**
+ * Seed/demo ids (non-UUID): the only ids a first-run or legacy demo state can
+ * hold. Real records are UUIDs (see withUuid in lib/remote); the one
+ * intentional exception is local-only opening ledger rows (`led-open-…`),
+ * which this must never touch.
+ */
+export function isSeedId(id: string): boolean {
+  if (typeof id !== 'string' || id.length === 0) return false;
+  if (id.startsWith('led-open-')) return false;
+  return /^(cust|supp|inv-item|inv|led-supp|led|rec|exp|gen|ord|veh|trip|emp)-\d+$/.test(id);
+}
 
+function scrubSeedRows<T extends { id: string }>(rows: unknown): T[] {
+  if (!Array.isArray(rows)) return [];
+  return (rows as T[]).filter(
+    (r) => r && (typeof r.id !== 'string' || !isSeedId(r.id))
+  );
+}
+
+/** Seed chart-of-accounts rows, keyed by code — scrubbed only on an exact code+name+balance match. */
+const SEED_ACCOUNTS_BY_CODE = new Map(INITIAL_ACCOUNTS.map((a) => [a.code, a]));
+
+function scrubSeedAccounts(rows: unknown): AccountItem[] {
+  if (!Array.isArray(rows)) return [];
+  return (rows as AccountItem[]).filter((a) => {
+    if (!a) return false;
+    if (typeof a.code !== 'string') return true;
+    const seed = SEED_ACCOUNTS_BY_CODE.get(a.code);
+    return !(seed && seed.name === a.name && seed.balance === a.balance);
+  });
+}
+
+/**
+ * Explicit demo seed — used ONLY by Settings "Reset to Demo Seed".
+ * First-run / empty storage must never load this (see loadSavedState).
+ */
+export function loadSeedState(): AppState {
   return {
     currentRole: 'owner',
-    language: 'ur', // Default Urdu for Pakistani shopkeepers
+    language: 'ur',
     todayMandiRate: 12000,
     parties: INITIAL_PARTIES,
     invoices: INITIAL_INVOICES,
@@ -868,8 +860,118 @@ export function loadSavedState(): AppState {
     accounts: INITIAL_ACCOUNTS,
     employees: INITIAL_EMPLOYEES,
     dayClosing: INITIAL_DAY_CLOSING,
-    isOffline: !navigator.onLine
+    isOffline: typeof navigator !== 'undefined' ? !navigator.onLine : false,
   };
+}
+
+export function loadSavedState(): AppState {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Trust what was saved — even empty arrays. Only fall back to seed
+      // values for keys that are entirely missing (old saves).
+      // Normalize invoices saved before extra charges existed.
+      const savedInvoices = (parsed.invoices ?? []) as Invoice[];
+      const invoices = scrubSeedRows<Invoice>(
+        savedInvoices.map((inv) => ({
+          ...inv,
+          charges: Array.isArray(inv.charges) ? inv.charges : [],
+          chargesTotal:
+            typeof inv.chargesTotal === 'number'
+              ? inv.chargesTotal
+              : (Array.isArray(inv.charges) ? inv.charges : []).reduce(
+                  (s: number, c: { amount?: number }) => s + (c.amount || 0),
+                  0
+                ),
+        }))
+      );
+      // Demo seed rows that got saved as local state (first run on a fresh
+      // browser, or a pre-fix wipe) are scrubbed out: the server re-supplies
+      // the real data on login, and seed rows never sync so nothing real is
+      // lost. Opening ledger rows (led-open-…) are local-only by design and
+      // are kept.
+      const countRows = (v: unknown): number => (Array.isArray(v) ? v.length : 0);
+      const parties = scrubSeedRows<Party>(parsed.parties ?? []);
+      const receipts = scrubSeedRows<ReceiptVoucher>(parsed.receipts ?? []);
+      const ledgerEntries = scrubSeedRows<LedgerEntry>(parsed.ledgerEntries ?? []);
+      const purchases = scrubSeedRows<Purchase>(parsed.purchases ?? []);
+      const expenses = scrubSeedRows<ExpenseItem>(parsed.expenses ?? []);
+      const generalEntries = scrubSeedRows<GeneralJournalEntry>(parsed.generalEntries ?? []);
+      const orders = scrubSeedRows<OrderItem>(parsed.orders ?? []);
+      const vehicles = scrubSeedRows<Vehicle>(parsed.vehicles ?? []);
+      const trips = scrubSeedRows<Trip>(parsed.trips ?? []);
+      const inventory = scrubSeedRows<InventoryItem>(parsed.inventory ?? []);
+      const employees = scrubSeedRows<Employee>(parsed.employees ?? []);
+      const beforeCount =
+        countRows(parsed.parties) +
+        countRows(savedInvoices) +
+        countRows(parsed.receipts) +
+        countRows(parsed.ledgerEntries) +
+        countRows(parsed.purchases) +
+        countRows(parsed.expenses) +
+        countRows(parsed.generalEntries) +
+        countRows(parsed.orders) +
+        countRows(parsed.vehicles) +
+        countRows(parsed.trips) +
+        countRows(parsed.inventory) +
+        countRows(parsed.employees);
+      const afterCount =
+        parties.length +
+        invoices.length +
+        receipts.length +
+        ledgerEntries.length +
+        purchases.length +
+        expenses.length +
+        generalEntries.length +
+        orders.length +
+        vehicles.length +
+        trips.length +
+        inventory.length +
+        employees.length;
+      // Only scrub chart-of-accounts rows when the saved state is proven
+      // seed-contaminated: account codes are shared with real accounts, so
+      // the triple (code+name+balance) match is applied on top of that.
+      const accounts =
+        afterCount < beforeCount
+          ? scrubSeedAccounts(parsed.accounts ?? [])
+          : ((parsed.accounts ?? []) as AccountItem[]);
+      // The seed day-closing (id 'close-1', 2024-10-07, Rs 840,000 cash) is
+      // not a real closing: drop it so the dashboard never shows demo money.
+      const dayClosing =
+        parsed.dayClosing && parsed.dayClosing.id !== 'close-1'
+          ? (parsed.dayClosing as DayClosing)
+          : createBlankState().dayClosing;
+      return {
+        currentRole: parsed.currentRole ?? 'owner',
+        language: parsed.language ?? 'ur',
+        todayMandiRate: parsed.todayMandiRate ?? 0,
+        parties,
+        invoices,
+        receipts,
+        ledgerEntries,
+        purchases,
+        expenses,
+        generalEntries,
+        orders,
+        vehicles,
+        trips,
+        inventory,
+        accounts,
+        employees,
+        dayClosing,
+        isOffline: !navigator.onLine
+      };
+    }
+  } catch (err) {
+    console.error('Error loading stored ERP data:', err);
+  }
+
+  // No saved state (or corrupt): start BLANK. Demo data must never appear
+  // uninvited — the old code returned the full seed dataset here, which is
+  // how a fresh mobile browser ended up showing demo parties, invoices and
+  // Rs 840,000 cash alongside real data.
+  return createBlankState();
 }
 
 export function saveStateToStorage(state: AppState) {
