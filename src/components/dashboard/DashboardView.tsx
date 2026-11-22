@@ -8,11 +8,10 @@ import {
   Trip, 
   InventoryItem, 
   AccountItem, 
-  DayClosing, 
   UserRole,
   ExpenseItem 
 } from '../../types';
-import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
+import { formatPKR, generateLedgerWhatsAppUrl, computeTodayKpis } from '../../utils/calculations';
 import { useBusiness } from '../../context/BusinessContext';
 import { 
   ResponsiveContainer, 
@@ -66,7 +65,6 @@ interface DashboardViewProps {
   trips: Trip[];
   inventory: InventoryItem[];
   accounts: AccountItem[];
-  dayClosing: DayClosing;
   todayMandiRate: number;
   currentRole: UserRole;
   language: 'en' | 'ur';
@@ -84,7 +82,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   trips,
   inventory,
   accounts,
-  dayClosing,
   todayMandiRate,
   currentRole,
   language,
@@ -112,11 +109,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const liveBirdsCount = inventory.filter(i => i.category === 'broiler').reduce((s, i) => s + i.currentCount, 0);
   const liveBirdsWeight = inventory.filter(i => i.category === 'broiler').reduce((s, i) => s + i.currentWeightKg, 0);
 
-  // Sales Today — no phantom defaults: no closing means zero sales.
-  const todaySalesAmount = dayClosing.totalSalesAmount ?? 0;
-  const todaySalesKg = dayClosing.totalSalesKg ?? 0;
-  const todayCollections = dayClosing.totalCollections ?? 0;
-
   // Voided sales are audit history only — excluded from every stat below.
   const liveInvoices = invoices.filter((i) => !i.isVoid);
 
@@ -125,7 +117,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     ? Math.round(liveInvoices.reduce((s, i) => s + i.saleRatePer40kg, 0) / liveInvoices.length) 
     : 0;
   const mandiMarginSpread = avgSaleRate - todayMandiRate;
-  const estimatedProfitToday = Math.round((todaySalesKg * mandiMarginSpread) / 40);
 
   // Mock Trend Data for Charts (7 Days of Mandi & Sales)
   // Last 7 calendar days (oldest → today) as YYYY-MM-DD strings.
@@ -134,6 +125,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     d.setDate(d.getDate() - (6 - i));
     return d.toISOString().split('T')[0];
   });
+
+  // "Today" KPIs are derived from the synced document collections — NOT from
+  // dayClosing (see computeTodayKpis). dayClosing is a per-machine
+  // accumulator: it only grows on the machine where the sale was entered, and
+  // every refresh overwrites it with the stale server roznamcha. That is why
+  // the dashboard showed Rs 0 for today's sales on a machine that had not
+  // entered them, while the reports table on the same page listed today's
+  // invoices. "Today" is last7DayKeys[6] — the same UTC date string the app
+  // stamps on invoices/receipts, so the KPIs agree with the trend charts.
+  const todayStr = last7DayKeys[6];
+  const { todaySalesAmount, todaySalesKg, todayCollections } = computeTodayKpis(
+    liveInvoices,
+    receipts,
+    todayStr
+  );
+  const estimatedProfitToday = Math.round((todaySalesKg * mandiMarginSpread) / 40);
   const URDU_WEEKDAYS = ['اتوار', 'پیر', 'منگل', 'بدھ', 'جمعرات', 'جمعہ', 'ہفتہ'];
   const EN_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const dayLabel = (dateStr: string, i: number): string => {

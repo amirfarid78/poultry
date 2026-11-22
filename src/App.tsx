@@ -150,7 +150,16 @@ function AppShell() {
     if (!session) return;
     if (typeof navigator !== 'undefined' && !navigator.onLine) return;
     try {
-      const remote = await fetchAll(supabase);
+      const { state: remote, failed } = await fetchAll(supabase);
+      if (failed.length > 0) {
+        // A single failed collection used to vanish silently: its slice kept
+        // whatever local state it had (often empty after a blank first run),
+        // so the dashboard showed 0 for cash/stock/expenses with a clean
+        // Online badge. Name the stale slices so the red chip shows them.
+        noteSyncProblem(
+          `Could not refresh from the server: ${failed.join(', ')} — showing the last saved data for those.`
+        );
+      }
       // Include quarantined entries: an unapplied local change is still the
       // freshest known state, so it must keep winning over stale server rows.
       const pending = await peekOutbox(true).catch(() => []);
@@ -1501,7 +1510,6 @@ function AppShell() {
             trips={appState.trips}
             inventory={appState.inventory}
             accounts={appState.accounts}
-            dayClosing={appState.dayClosing}
             todayMandiRate={appState.todayMandiRate}
             currentRole={role}
             language={appState.language}

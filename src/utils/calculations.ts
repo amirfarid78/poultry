@@ -202,3 +202,45 @@ export function generateLedgerWhatsAppUrl(data: {
 
   return `https://wa.me/${normPhone}?text=${encodeURIComponent(message)}`;
 }
+
+import type { Invoice, ReceiptVoucher } from '../types';
+
+export interface TodayKpis {
+  todaySalesAmount: number;
+  todaySalesKg: number;
+  todayCollections: number;
+}
+
+/**
+ * "Today" dashboard KPIs, derived from the synced document collections.
+ *
+ * They must NOT come from dayClosing: dayClosing is a per-machine
+ * accumulator — it only grows on the machine where the sale was entered,
+ * and every refresh overwrites it with the stale server roznamcha. On any
+ * other machine the dashboard showed Rs 0 for today's sales while the
+ * reports table on the same page listed today's invoices. Invoices and
+ * receipts sync, so deriving from them is correct on every machine.
+ *
+ * Collections mirror the dayClosing accumulation exactly: customer receipts
+ * dated today, plus cash/account received at the point of sale on today's
+ * invoices. Voided documents are excluded on both sides. `todayStr` uses
+ * the same UTC date string the app stamps on invoices/receipts, so the
+ * KPIs always agree with the trend charts and the reports table.
+ * `liveInvoices` must already exclude voided invoices.
+ */
+export function computeTodayKpis(
+  liveInvoices: Invoice[],
+  receipts: ReceiptVoucher[],
+  todayStr: string
+): TodayKpis {
+  const todayInvoices = liveInvoices.filter((inv) => inv.invoiceDate === todayStr);
+  return {
+    todaySalesAmount: todayInvoices.reduce((s, inv) => s + (inv.totalAmount || 0), 0),
+    todaySalesKg: todayInvoices.reduce((s, inv) => s + (inv.netWeightKg || 0), 0),
+    todayCollections:
+      receipts
+        .filter((r) => !r.isVoid && r.partyType === 'customer' && r.receiptDate === todayStr)
+        .reduce((s, r) => s + (r.amount || 0), 0) +
+      todayInvoices.reduce((s, inv) => s + (inv.receivedCash || 0) + (inv.receivedAC || 0), 0),
+  };
+}

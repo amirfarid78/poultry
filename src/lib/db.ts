@@ -848,12 +848,22 @@ export async function updateBusinessSettings(
  * most recent roznamcha (omitted when none exists). currentRole / language /
  * isOffline stay local-only (offline bootstrap cache).
  */
-export async function fetchAll(db: Db): Promise<Partial<AppState>> {
+export async function fetchAll(db: Db): Promise<{ state: Partial<AppState>; failed: string[] }> {
   // One failing collection used to reject the whole Promise.all and kill the
   // entire refresh (silently — refreshFromServer swallows it), leaving stale
   // or demo data on screen, especially on flaky mobile connections. Each
   // fetch now fails independently: a failed collection is left out of the
   // result so the merge keeps the local copy of just that collection.
+  // The failure is NOT silent anymore: `failed` names the collections so the
+  // caller can surface them — a slice that never refreshes shows as 0 on the
+  // dashboard with a clean Online badge otherwise, which is exactly how a
+  // dead products/accounts fetch hid for days.
+  const failed: string[] = [];
+  const guard = <T,>(name: string, p: Promise<T>): Promise<T | undefined> =>
+    p.catch(() => {
+      failed.push(name);
+      return undefined;
+    });
   const [
     parties,
     invoices,
@@ -871,21 +881,21 @@ export async function fetchAll(db: Db): Promise<Partial<AppState>> {
     mandiRates,
     dayClosing,
   ] = await Promise.all([
-    fetchParties(db).catch(() => undefined),
-    fetchInvoices(db).catch(() => undefined),
-    fetchReceipts(db).catch(() => undefined),
-    fetchLedgerEntries(db).catch(() => undefined),
-    fetchPurchases(db).catch(() => undefined),
-    fetchExpenses(db).catch(() => undefined),
-    fetchJournalEntries(db).catch(() => undefined),
-    fetchOrders(db).catch(() => undefined),
-    fetchVehicles(db).catch(() => undefined),
-    fetchTrips(db).catch(() => undefined),
-    fetchProducts(db).catch(() => undefined),
-    fetchAccounts(db).catch(() => undefined),
-    fetchEmployees(db).catch(() => undefined),
-    fetchMandiRates(db, 1).catch(() => undefined),
-    fetchDayClosing(db).catch(() => undefined),
+    guard('parties', fetchParties(db)),
+    guard('invoices', fetchInvoices(db)),
+    guard('receipts', fetchReceipts(db)),
+    guard('ledgerEntries', fetchLedgerEntries(db)),
+    guard('purchases', fetchPurchases(db)),
+    guard('expenses', fetchExpenses(db)),
+    guard('generalEntries', fetchJournalEntries(db)),
+    guard('orders', fetchOrders(db)),
+    guard('vehicles', fetchVehicles(db)),
+    guard('trips', fetchTrips(db)),
+    guard('inventory', fetchProducts(db)),
+    guard('accounts', fetchAccounts(db)),
+    guard('employees', fetchEmployees(db)),
+    guard('mandiRates', fetchMandiRates(db, 1)),
+    guard('dayClosing', fetchDayClosing(db)),
   ]);
 
   const state: Partial<AppState> = {};
@@ -907,7 +917,7 @@ export async function fetchAll(db: Db): Promise<Partial<AppState>> {
   if (Object.keys(state).length === 0) {
     throw new Error('Could not reach the server — no data could be refreshed.');
   }
-  return state;
+  return { state, failed };
 }
 
 // ---------------------------------------------------------------------------

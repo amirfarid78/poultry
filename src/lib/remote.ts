@@ -177,6 +177,23 @@ export function reconcileState(
   ): T[] => {
     if (!server) return local;
     const p = byTable[stateKey] ?? EMPTY;
+    // Reference slices the app never deletes from (accounts, inventory) must
+    // not be wiped by an empty server result: PostgREST returns [] — not an
+    // error — when RLS denies every row, so a permission hiccup would
+    // silently zero the cash/stock cards while the badge stays clean Online.
+    // An empty server result for these two collections is never a legitimate
+    // app state (the Danger Zone wipe resets local state explicitly instead
+    // of relying on the merge), so keep the local copy when there is nothing
+    // pending to delete from it. Other collections are excluded: expenses,
+    // parties, invoices, etc. all have real delete/void flows.
+    if (
+      server.length === 0 &&
+      local.length > 0 &&
+      (stateKey === 'accounts' || stateKey === 'inventory') &&
+      p.deleted.size === 0
+    ) {
+      return local;
+    }
     const serverIds = new Set(server.map(getId));
     const localById = new Map<string, T>();
     for (const r of local) localById.set(getId(r), r);
