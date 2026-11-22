@@ -77,11 +77,37 @@ export function mapInvoiceRow(row: InvoiceRow, customerName: string, customerUrd
 
 /**
  * Fetch a single invoice by its public share_token using the anon key.
- * The backend keeps a public SELECT policy on invoices for share_token links
- * (customer WhatsApp links). Parties are staff-only under RLS, so the customer
- * name falls back to a placeholder for anonymous viewers.
+ *
+ * Primary path: SECURITY DEFINER RPC get_public_invoice(p_token), which
+ * returns the invoice row joined to its party (so the customer name is
+ * included) and keeps working after the anon share SELECT policies on
+ * invoices are dropped. Transitional fallback: if the RPC does not exist
+ * yet (PGRST202 / "function ... does not exist" — migration not run yet),
+ * fall back to the direct-table query, which works until the migration
+ * runs. After the migration the direct query returns nothing under RLS
+ * and the RPC is the only path. Return type is unchanged.
  */
 export async function fetchPublicInvoice(shareToken: string): Promise<Invoice | null> {
+  // 1. RPC first.
+  try {
+    const { data, error } = await supabase.rpc('get_public_invoice', { p_token: shareToken });
+    if (!error && data) {
+      const row = Array.isArray(data) ? data[0] : data;
+      if (row) {
+        const customerName = (row as any).customer_name ?? (row as any).party_name ?? (row as any).name ?? 'Customer';
+        const customerUrduName = (row as any).customer_urdu_name ?? (row as any).party_urdu_name ?? (row as any).urdu_name ?? 'گاہک';
+        return mapInvoiceRow(row as InvoiceRow, customerName, customerUrduName);
+      }
+      return null;
+    }
+    if (error && !isMissingFunctionError(error)) return null;
+    // Missing-function error -> fall through to the direct-table fallback.
+  } catch {
+    // RPC call itself failed (e.g. function missing) -> fall through.
+  }
+
+  // 2. Transitional fallback: direct-table query (works until the migration
+  //    that drops the anon share policies is run).
   const { data, error } = await supabase
     .from('invoices')
     .select('*')
@@ -110,4 +136,9 @@ export async function fetchPublicInvoice(shareToken: string): Promise<Invoice | 
   }
 
   return mapInvoiceRow(data, customerName, customerUrduName);
+}
+
+function isMissingFunctionError(error: { code?: string; message?: string }): boolean {
+  const msg = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return msg.includes('pgrst202') || msg.includes('does not exist') || msg.includes('could not find the function');
 }

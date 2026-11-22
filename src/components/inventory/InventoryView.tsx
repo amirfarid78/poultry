@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { InventoryItem, UserRole } from '../../types';
 import { Layers, Plus, AlertTriangle, ArrowDown, ArrowUp, Activity } from 'lucide-react';
 
@@ -7,28 +7,42 @@ interface InventoryViewProps {
   currentRole: UserRole;
   language: 'en' | 'ur';
   onUpdateInventory: (items: InventoryItem[]) => void;
+  onRecordMortality?: (deadKg: number, reason: string) => void;
 }
 
 export const InventoryView: React.FC<InventoryViewProps> = ({
   inventory,
   currentRole,
   language,
-  onUpdateInventory
+  onUpdateInventory,
+  onRecordMortality
 }) => {
   const isUrdu = language === 'ur';
   const [showMortalityModal, setShowMortalityModal] = useState(false);
   const [showAddStockModal, setShowAddStockModal] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string>(inventory[0]?.id || '');
-  const [deadCount, setDeadCount] = useState<number>(5);
-  const [deadKg, setDeadKg] = useState<number>(10.5);
-  const [reason, setReason] = useState<string>('گرمی و ٹرانسپورٹ دباؤ (Heat stress during transit)');
+  const [deadCount, setDeadCount] = useState<number>(0);
+  const [deadKg, setDeadKg] = useState<number>(0);
+  const [reason, setReason] = useState<string>('');
 
   // Add stock state
   const [addStockItemId, setAddStockItemId] = useState<string>(inventory[0]?.id || '');
-  const [addStockCount, setAddStockCount] = useState<number>(500);
-  const [addStockKg, setAddStockKg] = useState<number>(1000);
+  const [addStockCount, setAddStockCount] = useState<number>(0);
+  const [addStockKg, setAddStockKg] = useState<number>(0);
   const [addStockAction, setAddStockAction] = useState<'add' | 'set'>('add');
 
+  // If the selected item disappears (delete/sync), fall back to the first item.
+  useEffect(() => {
+    if (selectedItemId && !inventory.some((i) => i.id === selectedItemId)) {
+      setSelectedItemId(inventory[0]?.id || '');
+    }
+    if (addStockItemId && !inventory.some((i) => i.id === addStockItemId)) {
+      setAddStockItemId(inventory[0]?.id || '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inventory]);
+
+  const broilerItems = inventory.filter((i) => i.category === 'broiler');
   const totalBirds = inventory.reduce((sum, item) => sum + item.currentCount, 0);
   const totalWeight = inventory.reduce((sum, item) => sum + item.currentWeightKg, 0);
 
@@ -46,6 +60,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     });
 
     onUpdateInventory(updated);
+    // Parent posts the mortality JV (Dr 5020 / Cr 1060) from deadKg + reason.
+    onRecordMortality?.(deadKg, reason);
     setShowMortalityModal(false);
   };
 
@@ -55,8 +71,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       if (item.id === addStockItemId) {
         return {
           ...item,
-          currentCount: addStockAction === 'add' ? item.currentCount + addStockCount : addStockCount,
-          currentWeightKg: addStockAction === 'add' ? item.currentWeightKg + addStockKg : addStockKg
+          currentCount: addStockAction === 'add' ? item.currentCount + addStockCount : Math.max(0, addStockCount),
+          currentWeightKg: addStockAction === 'add' ? item.currentWeightKg + addStockKg : Math.max(0, addStockKg)
         };
       }
       return item;
@@ -200,7 +216,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   onChange={(e) => setSelectedItemId(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold"
                 >
-                  {inventory.filter(i => i.category === 'broiler').map((i) => (
+                  {broilerItems.map((i) => (
                     <option key={i.id} value={i.id}>
                       {i.name} ({i.currentCount} birds, {i.currentWeightKg} kg)
                     </option>
@@ -248,6 +264,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 />
               </div>
 
+              {broilerItems.length === 0 && (
+                <p className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-500 text-center font-bold">
+                  {isUrdu ? 'کوئی برائلر آئٹم موجود نہیں — پہلے Inventory میں اسٹاک درج کریں۔' : 'No broiler items in stock — add stock in Inventory first.'}
+                </p>
+              )}
+
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -258,7 +280,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl"
+                  disabled={broilerItems.length === 0}
+                  className="px-5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl disabled:opacity-40"
                 >
                   {isUrdu ? 'نقصان ریکارڈ کریں' : 'Deduct from Stock'}
                 </button>
@@ -331,6 +354,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     value={addStockCount}
                     onChange={(e) => setAddStockCount(parseInt(e.target.value) || 0)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold"
+                    min={0}
                     required
                   />
                 </div>
@@ -344,6 +368,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     value={addStockKg}
                     onChange={(e) => setAddStockKg(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold font-mono text-emerald-800"
+                    min={0}
                     required
                   />
                 </div>

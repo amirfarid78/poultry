@@ -76,7 +76,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       deliverySlot: o.deliverySlot,
       deliveryRoute: o.deliveryRoute,
       assignedVehicleId: o.assignedVehicleId || '',
-      assignedDriverId: (o as any).assignedDriverId || '',
+      assignedDriverId: o.assignedDriverId || '',
       specialNotes: o.specialNotes || '',
     });
     setShowModal(true);
@@ -100,8 +100,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         deliverySlot: form.deliverySlot,
         deliveryRoute: form.deliveryRoute,
         assignedVehicleId: form.assignedVehicleId || undefined,
+        assignedDriverId: form.assignedDriverId || undefined,
+        assignedDriverName: form.assignedDriverId ? driver?.fullName : undefined,
         specialNotes: form.specialNotes,
-        ...(form.assignedDriverId ? { assignedDriverId: form.assignedDriverId, assignedDriverName: driver?.fullName } : {}),
       } as OrderItem);
     } else {
       const newOrder: OrderItem = {
@@ -114,6 +115,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         bookerId: currentUserId || 'unknown',
         bookerName: currentUserName || currentRole,
         assignedVehicleId: form.assignedVehicleId || undefined,
+        assignedDriverId: form.assignedDriverId || undefined,
+        assignedDriverName: form.assignedDriverId ? driver?.fullName : undefined,
         expectedKg: form.expectedKg,
         expectedBirdCount: form.expectedBirdCount,
         quotedRatePer40kg: form.quotedRate,
@@ -123,10 +126,6 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         specialNotes: form.specialNotes,
         createdAt: new Date().toISOString(),
       } as OrderItem;
-      if (form.assignedDriverId) {
-        (newOrder as any).assignedDriverId = form.assignedDriverId;
-        (newOrder as any).assignedDriverName = driver?.fullName;
-      }
       onAddOrder(newOrder);
     }
     setShowModal(false);
@@ -134,6 +133,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   };
 
   const handleDelete = (o: OrderItem) => {
+    if (o.status === 'invoiced') {
+      alert(isUrdu
+        ? `آرڈر ${o.orderNumber} پہلے ہی انوائس ہو چکا ہے — اسے حذف نہیں کیا جا سکتا۔`
+        : `Order ${o.orderNumber} is already invoiced and cannot be deleted.`);
+      return;
+    }
     const msg = isUrdu
       ? `کیا آپ واقعی آرڈر ${o.orderNumber} حذف کرنا چاہتے ہیں؟`
       : `Delete order ${o.orderNumber}?`;
@@ -271,7 +276,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     <td className="p-3 text-right font-mono text-slate-700">Rs {ord.quotedRatePer40kg.toLocaleString()}</td>
                     <td className="p-3 text-slate-600 text-[11px]">
                       <p className="font-mono font-bold">{veh ? veh.plateNumber : '—'}</p>
-                      <p>{(ord as any).assignedDriverName || ''}</p>
+                      <p>{ord.assignedDriverName || ''}</p>
                     </td>
                     <td className="p-3 text-center">
                       <select value={ord.status} disabled={!canEdit}
@@ -282,7 +287,6 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         <option value="loaded">Loaded</option>
                         <option value="out_for_delivery">Out for Delivery</option>
                         <option value="delivered">Delivered</option>
-                        <option value="invoiced">Invoiced</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
                     </td>

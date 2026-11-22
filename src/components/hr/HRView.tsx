@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Employee, UserRole } from '../../types';
 import { formatPKR } from '../../utils/calculations';
+import { nextDocNumber } from '../../utils/docNumbers';
 import { Users, Plus, DollarSign, Calendar, CheckCircle, UserPlus, Edit3, Trash2 } from 'lucide-react';
 
 interface HRViewProps {
@@ -21,11 +22,14 @@ export const HRView: React.FC<HRViewProps> = ({
   onIssueAdvance
 }) => {
   const isUrdu = language === 'ur';
+  // PKT calendar date (YYYY-MM-DD), not UTC.
+  const todayPKT = () =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const [selectedEmpId, setSelectedEmpId] = useState<string>(employees[0]?.id || '');
   const [showAdvanceModal, setShowAdvanceModal] = useState(false);
   const [showAddEmpModal, setShowAddEmpModal] = useState(false);
   const [advanceAmount, setAdvanceAmount] = useState<number>(5000);
-  const [advanceNotes, setAdvanceNotes] = useState<string>('ماہانہ پیشگی ضرورت (Family expense)');
+  const [advanceNotes, setAdvanceNotes] = useState<string>('');
   const [notice, setNotice] = useState<string | null>(null);
 
   // New Employee state
@@ -35,7 +39,7 @@ export const HRView: React.FC<HRViewProps> = ({
   const [newEmpPhone, setNewEmpPhone] = useState('');
   const [newEmpCnic, setNewEmpCnic] = useState('');
   const [newEmpSalary, setNewEmpSalary] = useState<number>(40000);
-  const [newEmpJoiningDate, setNewEmpJoiningDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newEmpJoiningDate, setNewEmpJoiningDate] = useState(todayPKT());
   // Employee being edited (null = adding new)
   const [editingEmp, setEditingEmp] = useState<Employee | null>(null);
 
@@ -45,17 +49,9 @@ export const HRView: React.FC<HRViewProps> = ({
     e.preventDefault();
     if (!selectedEmp || advanceAmount <= 0) return;
 
-    const updated = employees.map((emp) => {
-      if (emp.id === selectedEmp.id) {
-        return {
-          ...emp,
-          advanceBalance: emp.advanceBalance + advanceAmount
-        };
-      }
-      return emp;
-    });
-
-    onUpdateEmployees(updated);
+    // Do NOT pre-update advanceBalance here: onIssueAdvance (App's
+    // handleIssueEmployeeAdvance) owns the single balance increment —
+    // updating here too doubled it.
     if (onIssueAdvance) {
       onIssueAdvance(selectedEmp.id, advanceAmount, advanceNotes);
     }
@@ -76,7 +72,7 @@ export const HRView: React.FC<HRViewProps> = ({
     setNewEmpPhone('');
     setNewEmpCnic('');
     setNewEmpSalary(40000);
-    setNewEmpJoiningDate(new Date().toISOString().split('T')[0]);
+    setNewEmpJoiningDate(todayPKT());
     setEditingEmp(null);
   };
 
@@ -88,7 +84,7 @@ export const HRView: React.FC<HRViewProps> = ({
     setNewEmpPhone(emp.phone);
     setNewEmpCnic(emp.cnic);
     setNewEmpSalary(emp.monthlySalary);
-    setNewEmpJoiningDate(emp.joiningDate || new Date().toISOString().split('T')[0]);
+    setNewEmpJoiningDate(emp.joiningDate || todayPKT());
     setShowAddEmpModal(true);
   };
 
@@ -113,12 +109,12 @@ export const HRView: React.FC<HRViewProps> = ({
     } else {
       const newEmp: Employee = {
         id: `emp-${Date.now()}`,
-        code: `EMP-${100 + employees.length + 1}`,
+        code: nextDocNumber('EMP', employees.map((e) => e.code), 100),
         name: newEmpName.trim(),
         urduName: newEmpUrduName.trim() || newEmpName.trim(),
         role: newEmpRole as any,
         phone: newEmpPhone.trim(),
-        cnic: newEmpCnic.trim() || '35201-0000000-1',
+        cnic: newEmpCnic.trim() || '',
         monthlySalary: Number(newEmpSalary) || 35000,
         advanceBalance: 0,
         joiningDate: newEmpJoiningDate
@@ -283,6 +279,19 @@ export const HRView: React.FC<HRViewProps> = ({
                   onChange={(e) => setAdvanceAmount(parseFloat(e.target.value) || 0)}
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-sm"
                   required
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  {isUrdu ? 'نوٹ / وجہ:' : 'Notes:'}
+                </label>
+                <input
+                  type="text"
+                  value={advanceNotes}
+                  onChange={(e) => setAdvanceNotes(e.target.value)}
+                  placeholder={isUrdu ? 'مثلاً: ماہانہ پیشگی ضرورت' : 'e.g. Monthly advance'}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300"
                 />
               </div>
 

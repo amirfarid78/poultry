@@ -187,6 +187,8 @@ export interface OrderItem {
   bookerId: string;
   bookerName: string;
   assignedVehicleId?: string;
+  assignedDriverId?: string;
+  assignedDriverName?: string;
   expectedKg: number;
   expectedBirdCount?: number;
   quotedRatePer40kg: number;
@@ -253,8 +255,8 @@ export interface Trip {
   fuelExpense: number;
   totalLoadKg: number;
   deliveredKg: number;
-  currentLat: number;
-  currentLng: number;
+  currentLat?: number;
+  currentLng?: number;
   stops: {
     customerId: string;
     customerName: string;

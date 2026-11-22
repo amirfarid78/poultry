@@ -351,7 +351,9 @@ function mapOrder(r: Row): OrderItem {
     customerUrduName: str(customer.urdu_name),
     bookerId: str(r.booker_id),
     bookerName: str(r.booker?.full_name),
-    assignedVehicleId: optStr(r.assigned_trip?.vehicle_id),
+    assignedVehicleId: optStr(r.assigned_vehicle_id) ?? optStr(r.assigned_trip?.vehicle_id),
+    assignedDriverId: optStr(r.assigned_driver_id),
+    assignedDriverName: optStr(r.driver?.full_name),
     expectedKg: num(r.expected_kg),
     expectedBirdCount: optNum(r.expected_bird_count),
     quotedRatePer40kg: num(r.quoted_rate_per_40kg),
@@ -380,10 +382,20 @@ function mapTrip(r: Row, pings: TripPing[]): Trip {
     endKm: optNum(r.end_km),
     fuelExpense: num(r.fuel_expense),
     totalLoadKg: load,
-    deliveredKg: Math.max(0, load - num(r.shortage_kg)),
-    currentLat: last ? last.lat : 0,
-    currentLng: last ? last.lng : 0,
-    stops: [],
+    deliveredKg: optNum(r.delivered_kg) ?? Math.max(0, load - num(r.shortage_kg)),
+    // No pings yet: leave the position undefined instead of faking (0, 0)
+    // (Gulf of Guinea). The map guards on truthy lat/lng.
+    currentLat: last ? last.lat : undefined,
+    currentLng: last ? last.lng : undefined,
+    stops: Array.isArray(r.stops)
+      ? (r.stops as Row[]).map((s) => ({
+          customerId: str(s.customerId ?? s.customer_id),
+          customerName: str(s.customerName ?? s.customer_name),
+          kg: num(s.kg),
+          isDelivered: s.isDelivered === true || s.is_delivered === true,
+          deliveredAt: optStr(s.deliveredAt ?? s.delivered_at),
+        }))
+      : [],
     path: pings.map((p) => [p.lat, p.lng] as [number, number]),
   };
 }
@@ -740,6 +752,7 @@ export async function fetchOrders(db: Db, limit = 2000): Promise<OrderItem[]> {
     .select(
       '*, customer:parties!orders_customer_id_fkey(name,urdu_name),' +
         ' booker:profiles!orders_booker_id_fkey(full_name),' +
+        ' driver:profiles!orders_assigned_driver_id_fkey(full_name),' +
         ' assigned_trip:trips!orders_assigned_trip_id_fkey(vehicle_id)'
     )
     .order('order_date', { ascending: false })
@@ -912,7 +925,10 @@ export async function fetchAll(db: Db): Promise<{ state: Partial<AppState>; fail
   if (inventory !== undefined) state.inventory = inventory;
   if (accounts !== undefined) state.accounts = accounts;
   if (employees !== undefined) state.employees = employees;
-  if (mandiRates !== undefined && mandiRates.length > 0) state.todayMandiRate = mandiRates[0].broilerRatePer40kg;
+  if (mandiRates !== undefined && mandiRates.length > 0) {
+    state.todayMandiRate = mandiRates[0].broilerRatePer40kg;
+    state.mandiRateDate = mandiRates[0].marketDate;
+  }
   if (dayClosing) state.dayClosing = dayClosing;
   if (Object.keys(state).length === 0) {
     throw new Error('Could not reach the server — no data could be refreshed.');
@@ -941,6 +957,7 @@ export type OutboxTable =
   | 'whatsapp_share_logs'
   | 'vehicles'
   | 'trips'
+  | 'chart_of_accounts'
   | 'invoice_voids'
   | 'receipt_voids'
   | 'ledger_edits'
@@ -991,6 +1008,7 @@ function rowInvoice(inv: Invoice): Row {
     ac_ref_no: inv.acRefNo || null,
     discount_amount: inv.discountAmount ?? 0,
     share_token: inv.shareToken || undefined,
+    notes: inv.notes || null,
   };
 }
 
@@ -1055,6 +1073,8 @@ function rowOrder(o: OrderItem): Row {
     order_date: o.orderDate,
     customer_id: o.customerId,
     booker_id: uuidOrUndefined(o.bookerId),
+    assigned_vehicle_id: uuidOrUndefined(o.assignedVehicleId),
+    assigned_driver_id: uuidOrUndefined(o.assignedDriverId),
     expected_kg: o.expectedKg,
     expected_bird_count: o.expectedBirdCount ?? undefined,
     quoted_rate_per_40kg: o.quotedRatePer40kg,
@@ -1188,6 +1208,8 @@ export function mapToDbRow(table: OutboxTable, payload: any): Row {
       return rowVehicle(payload as Vehicle);
     case 'trips':
       return rowTrip(payload as Trip);
+    case 'chart_of_accounts':
+      return rowAccount(payload as AccountItem);
     case 'employees':
       return rowEmployee(payload as Employee);
     default:
@@ -1228,10 +1250,26 @@ function rowTrip(t: Trip): Row {
     end_time: t.endTime === undefined ? undefined : t.endTime || null,
     fuel_expense: optNum(t.fuelExpense),
     total_load_kg: total,
+    delivered_kg: delivered,
+    stops: t.stops ?? undefined,
     shortage_kg:
       total !== undefined && delivered !== undefined
         ? Math.max(0, total - delivered)
         : undefined,
+  };
+}
+
+function rowAccount(a: AccountItem): Row {
+  // AccountItem carries no id (accounts are keyed by account_code, UNIQUE
+  // per the schema) and no parent_code on either side: send only the
+  // fields that exist on both the type and the chart_of_accounts table.
+  // The DB defaults a fresh UUID id for new rows on upsert.
+  return {
+    account_code: a.code,
+    name: a.name,
+    urdu_name: a.urduName,
+    category: a.category,
+    balance: a.balance,
   };
 }
 
@@ -1260,6 +1298,8 @@ export function conflictTarget(table: OutboxTable): string | null {
   switch (table) {
     case 'products':
       return 'code';
+    case 'chart_of_accounts':
+      return 'account_code';
     case 'mandi_rates':
       return 'market_date,city';
     case 'day_closings':

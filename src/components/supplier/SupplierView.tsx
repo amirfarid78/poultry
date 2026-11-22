@@ -34,7 +34,7 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
   ledgerEntries,
   currentRole,
   language,
-  todayMandiRate = 12000,
+  todayMandiRate,
   onAddPurchase,
   onOpenReceiptModal,
   onAddParty,
@@ -43,6 +43,9 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
   onEditLedgerEntry
 }) => {
   const isUrdu = language === 'ur';
+  // PKT calendar date (YYYY-MM-DD), not UTC.
+  const todayPKT = () =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const suppliers = parties.filter((p) => p.partyType === 'supplier');
   const canEditLedger = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>(suppliers[0]?.id || '');
@@ -51,11 +54,12 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
   const [showPrintModal, setShowPrintModal] = useState(false);
 
   const [showAddPurchaseModal, setShowAddPurchaseModal] = useState(false);
-  const [purchaseRate, setPurchaseRate] = useState<number>(todayMandiRate || 11800);
-  const [purchaseWeight, setPurchaseWeight] = useState<number>(2000);
-  const [birdCount, setBirdCount] = useState<number>(1000);
-  const [paidCash, setPaidCash] = useState<number>(100000);
-  const [paidBank, setPaidBank] = useState<number>(200000);
+  const [purchaseRate, setPurchaseRate] = useState<number>(todayMandiRate || 0);
+  const [purchaseWeight, setPurchaseWeight] = useState<number>(0);
+  const [birdCount, setBirdCount] = useState<number>(0);
+  const [mortalityKg, setMortalityKg] = useState<number>(0);
+  const [paidCash, setPaidCash] = useState<number>(0);
+  const [paidBank, setPaidBank] = useState<number>(0);
 
   const [isAddSupplierModalOpen, setIsAddSupplierModalOpen] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Party | null>(null);
@@ -85,7 +89,8 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
     e.preventDefault();
     if (!selectedSupplier) return;
 
-    const totalAmount = Math.round((purchaseRate * purchaseWeight) / 40);
+    const netWeightKg = Math.max(0, (purchaseWeight || 0) - (mortalityKg || 0));
+    const totalAmount = Math.round((purchaseRate * netWeightKg) / 40);
     const totalPaid = (paidCash || 0) + (paidBank || 0);
     const prevBal = selectedSupplier.currentBalance;
     const newBal = prevBal + totalAmount - totalPaid;
@@ -93,13 +98,13 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
     const newPurchase: Purchase = {
       id: `pur-${Date.now()}`,
       purchaseNumber: nextDocNumber('PUR', purchases.map((p) => p.purchaseNumber), 100),
-      purchaseDate: new Date().toISOString().split('T')[0],
+      purchaseDate: todayPKT(),
       supplierId: selectedSupplier.id,
       supplierName: selectedSupplier.name,
       ratePer40kg: purchaseRate,
       grossWeightKg: purchaseWeight,
-      mortalityKg: 0,
-      netWeightKg: purchaseWeight,
+      mortalityKg: mortalityKg || 0,
+      netWeightKg,
       birdCount,
       totalAmount,
       paidCash,
@@ -369,7 +374,7 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
                 </div>
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    {isUrdu ? 'خالص وزن (کلو):' : 'Net Weight (Kg):'}
+                    {isUrdu ? 'مجموعی وزن (کلو):' : 'Gross Weight (Kg):'}
                   </label>
                   <input
                     type="number"
@@ -379,6 +384,19 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
                     required
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  {isUrdu ? 'اموات وزن (کلو):' : 'Mortality (Kg):'}
+                </label>
+                <input
+                  type="number"
+                  value={mortalityKg}
+                  onChange={(e) => setMortalityKg(parseFloat(e.target.value) || 0)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                  min={0}
+                />
               </div>
 
               <div>
@@ -396,7 +414,7 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex justify-between font-bold">
                 <span>{isUrdu ? 'کل بل خریداری:' : 'Total Amount:'}</span>
                 <span className="font-mono text-emerald-800">
-                  Rs {Math.round((purchaseRate * purchaseWeight) / 40).toLocaleString()}
+                  Rs {Math.round((purchaseRate * Math.max(0, (purchaseWeight || 0) - (mortalityKg || 0))) / 40).toLocaleString()}
                 </span>
               </div>
 

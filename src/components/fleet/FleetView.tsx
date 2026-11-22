@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Vehicle, Trip, UserRole, StaffProfile, OrderItem } from '../../types';
+import { Vehicle, Trip, UserRole, StaffProfile, OrderItem, ExpenseItem } from '../../types';
 import { supabase } from '../../lib/supabase';
+import { nextDocNumber } from '../../utils/docNumbers';
 import { insertTripPing } from '../../lib/db';
 import {
   Truck, MapPin, Navigation, Play, Square, CheckCircle2, Fuel,
@@ -14,6 +15,7 @@ interface FleetViewProps {
   trips: Trip[];
   orders: OrderItem[];
   staffProfiles: StaffProfile[];
+  expenses: ExpenseItem[];
   currentUserId: string | null;
   currentRole: UserRole;
   language: 'en' | 'ur';
@@ -38,6 +40,7 @@ export const FleetView: React.FC<FleetViewProps> = ({
   trips,
   orders,
   staffProfiles,
+  expenses,
   currentUserId,
   currentRole,
   language,
@@ -49,6 +52,11 @@ export const FleetView: React.FC<FleetViewProps> = ({
   const isUrdu = language === 'ur';
   const isDriver = currentRole === 'driver';
   const canManage = currentRole === 'owner' || currentRole === 'manager';
+  // Fuel expenses have no reliable per-trip link, so the honest aggregate is
+  // the fleet total (per-trip fuelExpense stays 0 — see TripManager note).
+  const fleetFuelTotal = expenses
+    .filter((e) => e.category === 'fuel')
+    .reduce((sum, e) => sum + (e.amount || 0), 0);
 
   // Drivers land on their console; managers on live tracking
   const [activeTab, setActiveTab] = useState<FleetTab>(isDriver ? 'driver' : 'tracking');
@@ -65,6 +73,12 @@ export const FleetView: React.FC<FleetViewProps> = ({
           {isUrdu
             ? 'گاڑی رجسٹریشن، ڈرائیور اسائنمنٹ، لائیو GPS ٹریکنگ اور ڈلیوری مینجمنٹ'
             : 'Vehicle registration, driver assignment, live GPS tracking and delivery management.'}
+        </p>
+        <p className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mt-3 inline-block">
+          <Fuel className="w-3.5 h-3.5 inline mr-1" />
+          {isUrdu
+            ? `فلیٹ کا کل فیول خرچ: Rs ${fleetFuelTotal.toLocaleString()} (تمام فیول اخراجات — فی ٹرپ فیول الگ سے درج نہیں ہوتا)`
+            : `Fleet fuel total: Rs ${fleetFuelTotal.toLocaleString()} (all fuel expenses — fuel is not tracked per trip)`}
         </p>
 
         {/* Tab bar */}
@@ -102,6 +116,7 @@ export const FleetView: React.FC<FleetViewProps> = ({
       {activeTab === 'trips' && canManage && (
         <TripManager
           vehicles={vehicles} trips={trips} orders={orders} staffProfiles={staffProfiles}
+          expenses={expenses}
           language={language} onAddTrip={onAddTrip}
         />
       )}
@@ -155,13 +170,22 @@ function VehicleManager({ vehicles, staffProfiles, language, onAddVehicle, onUpd
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editing || !editing.plateNumber.trim()) return;
+    const plate = editing.plateNumber.trim().toUpperCase();
+    const duplicate = vehicles.find(
+      (v) => v.id !== editing.id && v.plateNumber.trim().toUpperCase() === plate
+    );
+    if (duplicate) {
+      alert(isUrdu
+        ? `نمبر پلیٹ ${plate} پہلے سے رجسٹر ہے — ایک ہی پلیٹ دو گاڑیوں پر نہیں ہو سکتی۔`
+        : `Plate number ${plate} is already registered — the same plate cannot be used on two vehicles.`);
+      return;
+    }
     const isNew = !vehicles.some((v) => v.id === editing.id);
     if (isNew) onAddVehicle(editing); else onUpdateVehicle(editing);
     setShowModal(false);
     setEditing(null);
   };
 
-  const today = new Date().toISOString().split('T')[0];
   const isExpiringSoon = (dateStr?: string) => {
     if (!dateStr) return false;
     const d = new Date(dateStr).getTime();
@@ -347,6 +371,7 @@ function LiveTrackingMap({ vehicles, trips, language, onUpdateTrip }: {
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const [lastPingAt, setLastPingAt] = useState<Record<string, string>>({});
   const [liveCount, setLiveCount] = useState(0);
+  const [liveError, setLiveError] = useState<string | null>(null);
 
   const truckIcon = (plate: string) => L.divIcon({
     className: 'custom-truck-pin',
@@ -389,7 +414,14 @@ function LiveTrackingMap({ vehicles, trips, language, onUpdateTrip }: {
         // Update trip's current position in app state
         onUpdateTrip({ ...trip, currentLat: lat, currentLng: lng, path: [...trip.path, [lat, lng]] });
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') setLiveError(null);
+        else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setLiveError(isUrdu
+            ? `لائیو ٹریکنگ کنکشن ناکام (${status}) — نقشہ تازہ پنگ نہیں دکھا رہا۔`
+            : `Live tracking connection failed (${status}) — the map is not receiving fresh pings.`);
+        }
+      });
     return () => { supabase.removeChannel(channel); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trips.length]);
@@ -406,13 +438,19 @@ function LiveTrackingMap({ vehicles, trips, language, onUpdateTrip }: {
         markersRef.current.set(t.id, m);
       }
     });
-    if (activeTrip?.currentLat) leafletMapRef.current.setView([activeTrip.currentLat, activeTrip.currentLng], 13);
+    if (activeTrip?.currentLat && activeTrip.currentLng) leafletMapRef.current.setView([activeTrip.currentLat, activeTrip.currentLng], 13);
   }, [trips, activeTrip]);
 
   const ongoingTrips = trips.filter((t) => t.status === 'ongoing');
 
   return (
     <div className="space-y-4">
+      {liveError && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-800 text-xs font-bold p-3 rounded-2xl flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>{liveError}</span>
+        </div>
+      )}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
@@ -460,11 +498,12 @@ function LiveTrackingMap({ vehicles, trips, language, onUpdateTrip }: {
 // ============================================================================
 // TRIP MANAGER — create trips from orders, assign vehicle + driver
 // ============================================================================
-function TripManager({ vehicles, trips, orders, staffProfiles, language, onAddTrip }: {
+function TripManager({ vehicles, trips, orders, staffProfiles, expenses, language, onAddTrip }: {
   vehicles: Vehicle[];
   trips: Trip[];
   orders: OrderItem[];
   staffProfiles: StaffProfile[];
+  expenses: ExpenseItem[];
   language: 'en' | 'ur';
   onAddTrip: (t: Trip) => void;
 }) {
@@ -490,17 +529,20 @@ function TripManager({ vehicles, trips, orders, staffProfiles, language, onAddTr
     if (!vehicle || selectedOrders.length === 0) return;
     const trip: Trip = {
       id: `trip-${Date.now()}`,
-      tripNumber: `TRIP-${1000 + trips.length + 1}`,
+      tripNumber: nextDocNumber('TRIP', trips.map((t) => t.tripNumber), 1000),
       vehicleId: vehicle.id,
       plateNumber: vehicle.plateNumber,
       driverId: driver?.id || vehicle.driverId || '',
       driverName: driver?.fullName || vehicle.driverName || '',
       status: 'planned',
+      // fuelExpense stays 0: fuel expenses are not linked to trips, so any
+      // per-trip number would be fabricated. The honest fleet total is shown
+      // on the fleet overview (sum of all 'fuel' expenses).
       fuelExpense: 0,
       totalLoadKg: totalKg,
       deliveredKg: 0,
-      currentLat: 31.5204,
-      currentLng: 74.3587,
+      // No faked position: currentLat/currentLng stay undefined until the
+      // driver broadcasts real GPS (the map viewport default is Lahore centre).
       stops: selectedOrders.map((o) => ({
         customerId: o.customerId,
         customerName: o.customerUrduName || o.customerName,
@@ -520,6 +562,11 @@ function TripManager({ vehicles, trips, orders, staffProfiles, language, onAddTr
         <h3 className="text-sm font-bold text-slate-800">
           {isUrdu ? `ڈلیوری ٹرپس (${trips.length})` : `Delivery Trips (${trips.length})`}
         </h3>
+        <span className="text-[11px] font-bold text-slate-500">
+          {isUrdu
+            ? `فلیٹ فیول کل: Rs ${expenses.filter((e) => e.category === 'fuel').reduce((sum, e) => sum + (e.amount || 0), 0).toLocaleString()} (فی ٹرپ فیول الگ نہیں)`
+            : `Fleet fuel total: Rs ${expenses.filter((e) => e.category === 'fuel').reduce((sum, e) => sum + (e.amount || 0), 0).toLocaleString()} (fuel not tracked per trip)`}
+        </span>
         <button onClick={() => setShowModal(true)}
           className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-md transition">
           <Plus className="w-4 h-4" />
@@ -634,9 +681,10 @@ function DriverConsole({ vehicles, trips, currentUserId, language, onUpdateTrip 
   onUpdateTrip: (t: Trip) => void;
 }) {
   const isUrdu = language === 'ur';
-  // Driver sees trips assigned to them (by user id) or, as fallback, all active trips
+  // Driver sees ONLY their own trips — the old filter also matched every
+  // other driver's ongoing/planned trips.
   const myTrips = trips.filter((t) =>
-    (currentUserId && t.driverId === currentUserId) || t.status === 'ongoing' || t.status === 'planned'
+    currentUserId !== null && t.driverId === currentUserId
   );
   const [selectedTripId, setSelectedTripId] = useState<string>(
     myTrips.find((t) => t.status === 'ongoing')?.id || myTrips[0]?.id || ''

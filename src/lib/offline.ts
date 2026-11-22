@@ -95,6 +95,21 @@ const DB_VERSION = 1;
 
 let dbPromise: Promise<IDBPDatabase<MmDb>> | null = null;
 
+/** A live connection that later closes leaves the cached promise pointing
+ * at a dead connection, so every later transaction throws "The database
+ * connection is closing." until page reload. Reset the cache so the next
+ * call opens a fresh connection. */
+function resetDbPromise(): void {
+  dbPromise = null;
+}
+
+/** True when an IndexedDB error means the connection is closing/closed
+ * (as opposed to genuinely unavailable storage). */
+function isClosingError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e ?? '');
+  return /closing|closed/i.test(msg);
+}
+
 function getDb(): Promise<IDBPDatabase<MmDb>> {
   if (!dbPromise) {
     // A single transient open failure used to poison the whole session:
@@ -111,12 +126,40 @@ function getDb(): Promise<IDBPDatabase<MmDb>> {
           db.createObjectStore('mm_cache', { keyPath: 'key' });
         }
       },
-    }).catch((e) => {
-      dbPromise = null;
-      throw e;
-    });
+    })
+      .then((db) => {
+        // Attach close listeners to the live connection: a connection that
+        // closes after a successful open (e.g. another tab deletes the
+        // database, browser eviction) must not leave dbPromise pointing
+        // at a dead IDBDatabase. idb proxies event methods to the native
+        // database, so addEventListener works on the wrapped instance.
+        const native = db as unknown as IDBDatabase;
+        native.addEventListener('close', resetDbPromise);
+        native.addEventListener('versionchange', resetDbPromise);
+        return db;
+      })
+      .catch((e) => {
+        dbPromise = null;
+        throw e;
+      });
   }
   return dbPromise;
+}
+
+/**
+ * Run an IndexedDB operation, retrying once with a fresh connection when
+ * the failure is a closing/closed connection. Truly unavailable storage
+ * (open failures, quota, private mode) still throws, so the sync engine's
+ * "Sync storage unavailable" error path is unchanged.
+ */
+async function withDb<T>(fn: (db: IDBPDatabase<MmDb>) => Promise<T>): Promise<T> {
+  try {
+    return await fn(await getDb());
+  } catch (e) {
+    if (!isClosingError(e)) throw e;
+    resetDbPromise();
+    return fn(await getDb());
+  }
 }
 
 const newId = (): string =>
@@ -132,7 +175,6 @@ export async function enqueueWrite(
   table: string,
   payload: Record<string, unknown>
 ): Promise<string> {
-  const db = await getDb();
   const entry: OutboxEntry = {
     id: newId(),
     op,
@@ -144,14 +186,13 @@ export async function enqueueWrite(
     last_error: null,
     dead: false,
   };
-  await db.put('mm_outbox', entry);
+  await withDb((db) => db.put('mm_outbox', entry));
   return entry.id;
 }
 
 /** Number of writes still waiting to be replayed (dead entries excluded). */
 export async function getPendingCount(): Promise<number> {
-  const db = await getDb();
-  const all = await db.getAll('mm_outbox');
+  const all = await withDb((db) => db.getAll('mm_outbox'));
   return all.filter((e) => !e.dead).length;
 }
 
@@ -162,22 +203,19 @@ export async function getPendingCount(): Promise<number> {
  *   over stale server rows even after quarantine.
  */
 export async function peekOutbox(includeDead = false): Promise<OutboxEntry[]> {
-  const db = await getDb();
-  const all = await db.getAllFromIndex('mm_outbox', 'by-created');
+  const all = await withDb((db) => db.getAllFromIndex('mm_outbox', 'by-created'));
   return includeDead ? all : all.filter((e) => !e.dead);
 }
 
 /** Quarantined entries, oldest first (for the failure UI). */
 export async function peekDeadEntries(): Promise<OutboxEntry[]> {
-  const db = await getDb();
-  const all = await db.getAllFromIndex('mm_outbox', 'by-created');
+  const all = await withDb((db) => db.getAllFromIndex('mm_outbox', 'by-created'));
   return all.filter((e) => e.dead);
 }
 
 /** Number of quarantined entries. */
 export async function getDeadCount(): Promise<number> {
-  const db = await getDb();
-  const all = await db.getAll('mm_outbox');
+  const all = await withDb((db) => db.getAll('mm_outbox'));
   return all.filter((e) => e.dead).length;
 }
 
@@ -186,57 +224,57 @@ export async function getDeadCount(): Promise<number> {
  * Returns how many were revived.
  */
 export async function reviveDeadEntries(): Promise<number> {
-  const db = await getDb();
-  const tx = db.transaction('mm_outbox', 'readwrite');
-  const dead = (await tx.store.getAll()).filter((e) => e.dead);
-  for (const e of dead) {
-    e.dead = false;
-    e.attempts = 0;
-    e.last_error = null;
-    await tx.store.put(e);
-  }
-  await tx.done;
-  return dead.length;
+  return withDb(async (db) => {
+    const tx = db.transaction('mm_outbox', 'readwrite');
+    const dead = (await tx.store.getAll()).filter((e) => e.dead);
+    for (const e of dead) {
+      e.dead = false;
+      e.attempts = 0;
+      e.last_error = null;
+      await tx.store.put(e);
+    }
+    await tx.done;
+    return dead.length;
+  });
 }
 
 /** Store a snapshot (e.g. last good fetchAll) for offline bootstrap. */
 export async function saveSnapshot(key: string, data: unknown): Promise<void> {
-  const db = await getDb();
-  await db.put('mm_cache', {
-    key,
-    data,
-    updated_at: new Date().toISOString(),
-  });
+  await withDb((db) =>
+    db.put('mm_cache', {
+      key,
+      data,
+      updated_at: new Date().toISOString(),
+    })
+  );
 }
 
 /** Read a snapshot; null when never cached. */
 export async function getSnapshot<T = unknown>(key: string): Promise<{ data: T; updated_at: string } | null> {
-  const db = await getDb();
-  const entry = await db.get('mm_cache', key);
+  const entry = await withDb((db) => db.get('mm_cache', key));
   return entry ? { data: entry.data as T, updated_at: entry.updated_at } : null;
 }
 
 /** Drop a queue entry after a successful replay. */
 export async function removeOutbox(id: string): Promise<void> {
-  const db = await getDb();
-  await db.delete('mm_outbox', id);
+  await withDb((db) => db.delete('mm_outbox', id));
 }
 
 /** Record a failed replay attempt. Quarantines the entry after
  * MAX_SYNC_ATTEMPTS consecutive failures so one poison entry can't wedge
  * the queue forever (it stays visible via peekDeadEntries for manual retry). */
 export async function markOutboxError(id: string, msg: string): Promise<void> {
-  const db = await getDb();
-  const entry = await db.get('mm_outbox', id);
-  if (!entry) return;
-  entry.attempts += 1;
-  entry.last_error = msg;
-  if (entry.attempts >= MAX_SYNC_ATTEMPTS) entry.dead = true;
-  await db.put('mm_outbox', entry);
+  await withDb(async (db) => {
+    const entry = await db.get('mm_outbox', id);
+    if (!entry) return;
+    entry.attempts += 1;
+    entry.last_error = msg;
+    if (entry.attempts >= MAX_SYNC_ATTEMPTS) entry.dead = true;
+    await db.put('mm_outbox', entry);
+  });
 }
 
 /** Danger zone: clear the whole outbox (e.g. after user-confirmed discard). */
 export async function clearOutbox(): Promise<void> {
-  const db = await getDb();
-  await db.clear('mm_outbox');
+  await withDb((db) => db.clear('mm_outbox'));
 }

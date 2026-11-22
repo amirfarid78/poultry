@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Party, 
+  InventoryItem,
   Invoice, 
   InvoiceCharge,
   PaymentMode, 
@@ -53,6 +54,7 @@ import {
 interface POSViewProps {
   parties: Party[];
   invoices: Invoice[];
+  inventory: InventoryItem[];
   vehicles: Vehicle[];
   todayMandiRate: number;
   currentRole: UserRole;
@@ -67,9 +69,14 @@ interface POSViewProps {
   onViewPublicInvoice: (invoice: Invoice) => void;
 }
 
+// 2 kg/bird convention (same as purchase/stock code).
+export const deriveBirdCount = (kg: number): number =>
+  kg > 0 ? Math.max(1, Math.round(kg / 2)) : 0;
+
 export const POSView: React.FC<POSViewProps> = ({
   parties,
   invoices,
+  inventory,
   vehicles,
   todayMandiRate,
   currentRole,
@@ -88,6 +95,13 @@ export const POSView: React.FC<POSViewProps> = ({
   const customers = parties.filter((p) => p.partyType === 'customer');
   // Voided sales stay in state for audit but never show in the working lists.
   const liveInvoices = invoices.filter((i) => !i.isVoid);
+  const voidedInvoices = invoices.filter((i) => i.isVoid);
+  const [showVoided, setShowVoided] = useState(false);
+  // BR-LIVE is the sellable live-bird stock row.
+  const brLive = inventory.find((i) => i.code === 'BR-LIVE');
+  const availableStockKg = brLive ? brLive.currentWeightKg : null;
+  const availableStockBirds = brLive ? brLive.currentCount : null;
+
   const canModifySales = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
 
   // Form State
@@ -95,9 +109,9 @@ export const POSView: React.FC<POSViewProps> = ({
   const [invoiceDate, setInvoiceDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [mandiRate, setMandiRate] = useState<number>(todayMandiRate ?? 0);
   const [saleRate, setSaleRate] = useState<number>(todayMandiRate > 0 ? todayMandiRate + 200 : 0);
-  const [weightKg, setWeightKg] = useState<number>(customers[0]?.defaultKilo || 80);
+  const [weightKg, setWeightKg] = useState<number>(customers[0]?.defaultKilo || 0);
   const [shrinkageKg, setShrinkageKg] = useState<number>(0);
-  const [birdCount, setBirdCount] = useState<number>(40);
+  const [birdCount, setBirdCount] = useState<number>(deriveBirdCount(customers[0]?.defaultKilo || 0));
   const [receivedCash, setReceivedCash] = useState<number>(0);
   const [receivedAC, setReceivedAC] = useState<number>(0);
   const [acPaymentMode, setAcPaymentMode] = useState<PaymentMode>('bank_transfer');
@@ -138,9 +152,9 @@ export const POSView: React.FC<POSViewProps> = ({
     setInvoiceDate(new Date().toISOString().split('T')[0]);
     setMandiRate(todayMandiRate ?? 0);
     setSaleRate(todayMandiRate > 0 ? todayMandiRate + 200 : 0);
-    setWeightKg(customers[0]?.defaultKilo || 80);
+    setWeightKg(customers[0]?.defaultKilo || 0);
     setShrinkageKg(0);
-    setBirdCount(40);
+    setBirdCount(deriveBirdCount(customers[0]?.defaultKilo || 0));
     setReceivedCash(0);
     setReceivedAC(0);
     setAcRefNo('');
@@ -178,13 +192,34 @@ export const POSView: React.FC<POSViewProps> = ({
   useEffect(() => {
     if (prefillOrder) {
       if (prefillOrder.customerId) setSelectedCustomerId(prefillOrder.customerId);
-      if (prefillOrder.expectedKg) setWeightKg(prefillOrder.expectedKg);
+      if (prefillOrder.expectedKg) handleWeightChange(prefillOrder.expectedKg);
       if (prefillOrder.quotedRatePer40kg) setSaleRate(prefillOrder.quotedRatePer40kg);
       if (prefillOrder.assignedVehicleId) setSelectedVehicleId(prefillOrder.assignedVehicleId);
       if (prefillOrder.expectedBirdCount) setBirdCount(prefillOrder.expectedBirdCount);
       setNotes(`Converted from Order #${prefillOrder.orderNumber} - Route: ${prefillOrder.deliveryRoute || '-'}`);
     }
   }, [prefillOrder]);
+
+  // P1-10: resync form when props change. Rates follow todayMandiRate only
+  // while the user has not manually edited them (tracked via the last
+  // applied rate ref); customer/vehicle fall back to the first available
+  // when the selected id no longer exists.
+  const lastAppliedRateRef = useRef<number>(todayMandiRate ?? 0);
+  useEffect(() => {
+    const newRate = todayMandiRate ?? 0;
+    if (mandiRate === lastAppliedRateRef.current) {
+      setMandiRate(newRate);
+      setSaleRate(newRate > 0 ? newRate + 200 : 0);
+    }
+    lastAppliedRateRef.current = newRate;
+    if (selectedCustomerId && !customers.some((c) => c.id === selectedCustomerId)) {
+      setSelectedCustomerId(customers[0]?.id || '');
+    }
+    if (selectedVehicleId && !vehicles.some((v) => v.id === selectedVehicleId)) {
+      setSelectedVehicleId(vehicles[0]?.id || '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayMandiRate, parties, vehicles]);
 
   // Voice Input & Speech Dictation State
   const [isListening, setIsListening] = useState(false);
@@ -217,12 +252,19 @@ export const POSView: React.FC<POSViewProps> = ({
 
   const selectedCustomer = parties.find((p) => p.id === selectedCustomerId) || customers[0];
 
+  // Weight change always re-derives bird count (2 kg/bird); the bird-count
+  // input stays editable and a manual bird edit holds until next weight change.
+  const handleWeightChange = (kg: number) => {
+    setWeightKg(kg);
+    setBirdCount(deriveBirdCount(kg));
+  };
+
   // Update default lot weight when customer changes
   const handleCustomerChange = (customerId: string) => {
     setSelectedCustomerId(customerId);
     const cust = parties.find((p) => p.id === customerId);
     if (cust && cust.defaultKilo) {
-      setWeightKg(cust.defaultKilo);
+      handleWeightChange(cust.defaultKilo);
     }
   };
 
@@ -238,6 +280,47 @@ export const POSView: React.FC<POSViewProps> = ({
     receivedAC,
     chargesTotal
   });
+  const stockExceeded = availableStockKg !== null && calc.netWeightKg > availableStockKg;
+  const creditLimit = selectedCustomer?.creditLimit || 0;
+  const creditExceeded = creditLimit > 0 && calc.newBalance > creditLimit;
+
+  // Generic Urdu number-word parser: "X ہزار [Y سو]" -> X*1000 + Y*100,
+  // plus plain digits. No hardcoded customer names, rates or cash amounts.
+  const URDU_NUMBERS: Record<string, number> = {
+    'ایک': 1, 'دو': 2, 'تین': 3, 'چار': 4, 'پانچ': 5, 'چھ': 6, 'سات': 7, 'آٹھ': 8, 'نو': 9,
+    'دس': 10, 'گیارہ': 11, 'بارہ': 12, 'تیرہ': 13, 'چودہ': 14, 'پندرہ': 15, 'سولہ': 16,
+    'سترہ': 17, 'اٹھارہ': 18, 'انیس': 19, 'بیس': 20, 'اکیس': 21, 'بائیس': 22, 'تیئس': 23,
+    'چوبیس': 24, 'پچیس': 25, 'چھبیس': 26, 'ستائیس': 27, 'اٹھائیس': 28, 'انتیس': 29,
+    'تیس': 30, 'اکتیس': 31, 'بتیس': 32, 'تیتیس': 33, 'چونتیس': 34, 'پینتیس': 35,
+    'چھتیس': 36, 'سینتیس': 37, 'اڑتیس': 38, 'انتالیس': 39, 'چالیس': 40, 'پچاس': 50,
+    'ساٹھ': 60, 'ستر': 70, 'اسی': 80, 'نوے': 90,
+  };
+  const parseUrduNumber = (segment: string): number => {
+    const text = segment.trim();
+    if (!text) return 0;
+    const digitMatch = text.match(/(\d+(?:\.\d+)?)/);
+    if (digitMatch) return parseFloat(digitMatch[1]);
+    if (text.includes('ڈیڑھ سو')) return 150;
+    if (text.includes('ڈیڑھ ہزار')) return 1500;
+    const tokens = text.split(/\s+/).filter(Boolean);
+    let total = 0;
+    let current = 0;
+    for (const tok of tokens) {
+      if (tok === 'ہزار') { total += (current || 1) * 1000; current = 0; }
+      else if (tok === 'سو') { total += (current || 1) * 100; current = 0; }
+      else if (URDU_NUMBERS[tok] !== undefined) { current += URDU_NUMBERS[tok]; }
+      else break;
+    }
+    return total + current;
+  };
+  // Text after a keyword (e.g. after "ریٹ" / "وصول"), up to a few words.
+  const segmentAfter = (text: string, keywords: string[]): string => {
+    for (const kw of keywords) {
+      const idx = text.indexOf(kw);
+      if (idx >= 0) return text.slice(idx + kw.length).trim().split(/\s+/).slice(0, 4).join(' ');
+    }
+    return '';
+  };
 
   // Intelligent speech-to-invoice entity parser
   const parseSpeechToInvoice = (text: string) => {
@@ -250,25 +333,22 @@ export const POSView: React.FC<POSViewProps> = ({
       const cUrduFirst = c.urduName ? c.urduName.split(' ')[0] : '';
       if ((cUrduFirst && text.includes(cUrduFirst)) || (cNameFirst && lower.includes(cNameFirst))) {
         setSelectedCustomerId(c.id);
-        if (c.defaultKilo) setWeightKg(c.defaultKilo);
+        if (c.defaultKilo) handleWeightChange(c.defaultKilo);
         break;
       }
     }
 
-    // 2. Match weight (kg / کلو)
-    const weightMatch = text.match(/(\d+)\s*(kilo|kg|کلو)/i);
+    // 2. Match weight (kg / کلو) — digits first, then Urdu number words.
+    const weightMatch = text.match(/(\d+(?:\.\d+)?)\s*(kilo|kg|کلو)/i);
     if (weightMatch) {
-      setWeightKg(parseInt(weightMatch[1]));
-    } else {
-      if (text.includes('اسی کلو') || text.includes('80 کلو') || text.includes('اسی')) setWeightKg(80);
-      else if (text.includes('ساٹھ کلو') || text.includes('60 کلو') || text.includes('ساٹھ')) setWeightKg(60);
-      else if (text.includes('چالیس کلو') || text.includes('40 کلو') || text.includes('چالیس')) setWeightKg(40);
-      else if (text.includes('ڈیڑھ سو') || text.includes('150')) setWeightKg(150);
-      else if (text.includes('سو کلو') || text.includes('100')) setWeightKg(100);
-      else if (text.includes('ایک سو بیس') || text.includes('120')) setWeightKg(120);
+      handleWeightChange(parseFloat(weightMatch[1]));
+    } else if (text.includes('کلو')) {
+      const beforeKilo = text.split('کلو')[0].trim().split(/\s+/).slice(-4).join(' ');
+      const kg = parseUrduNumber(beforeKilo);
+      if (kg > 0) handleWeightChange(kg);
     }
 
-    // 3. Match rate
+    // 3. Match rate — digits first, then Urdu number words after "ریٹ"/"rate".
     const rateMatch = text.match(/(?:ریٹ|rate)\s*(\d{4,6})/i) || text.match(/(\d{5})/);
     if (rateMatch) {
       const parsed = parseInt(rateMatch[1]);
@@ -276,27 +356,24 @@ export const POSView: React.FC<POSViewProps> = ({
         setSaleRate(parsed);
       }
     } else {
-      if (text.includes('بارہ ہزار دو سو') || text.includes('12200')) setSaleRate(12200);
-      else if (text.includes('بارہ ہزار') || text.includes('12000')) setSaleRate(12000);
-      else if (text.includes('تیرہ ہزار دو سو') || text.includes('13200')) setSaleRate(13200);
-      else if (text.includes('تیرہ ہزار') || text.includes('13000')) setSaleRate(13000);
+      const rate = parseUrduNumber(segmentAfter(text, ['ریٹ', 'rate']));
+      if (rate >= 5000 && rate <= 25000) setSaleRate(rate);
     }
 
-    // 4. Match received cash
+    // 4. Match received cash — digits first, then Urdu number words after
+    // "وصول"/"نقد"/"cash".
     const cashMatch = text.match(/(?:وصول|نقد|cash|wasool)\s*(\d+)/i) || text.match(/(\d+)\s*(?:وصول|نقد|cash)/i);
     if (cashMatch) {
       setReceivedCash(parseInt(cashMatch[1]));
     } else {
-      if (text.includes('بیس ہزار') || text.includes('20000')) setReceivedCash(20000);
-      else if (text.includes('دس ہزار') || text.includes('10000')) setReceivedCash(10000);
-      else if (text.includes('نو ہزار') || text.includes('9000')) setReceivedCash(9000);
-      else if (text.includes('پانچ ہزار') || text.includes('5000')) setReceivedCash(5000);
+      const cash = parseUrduNumber(segmentAfter(text, ['وصول', 'نقد', 'cash', 'wasool']));
+      if (cash > 0) setReceivedCash(cash);
     }
 
     setSpeechFeedback(
-      isUrdu 
-        ? `آواز سے ڈیٹا محفوظ ہو گیا: "${text}"` 
-        : `Extracted from voice: "${text}"`
+      isUrdu
+        ? `آواز سے ڈیٹا فارم میں بھر دیا گیا — محفوظ کرنے سے پہلے چیک کر لیں: "${text}"`
+        : `Voice parsed into the form — review before saving: "${text}"`
     );
     setTimeout(() => setSpeechFeedback(null), 5000);
   };
@@ -434,6 +511,24 @@ export const POSView: React.FC<POSViewProps> = ({
       return null;
     }
 
+    // Warn-and-confirm (never a silent hard block): stock and credit limit.
+    if (availableStockKg !== null && calc.netWeightKg > availableStockKg) {
+      const ok = window.confirm(
+        isUrdu
+          ? `انتباہ: اسٹاک میں صرف ${availableStockKg.toLocaleString()} کلو موجود ہے، جبکہ بل ${calc.netWeightKg.toLocaleString()} کلو کا ہے۔ پھر بھی محفوظ کریں؟`
+          : `Warning: only ${availableStockKg.toLocaleString()} kg in stock (BR-LIVE) but this sale is ${calc.netWeightKg.toLocaleString()} kg. Save anyway?`
+      );
+      if (!ok) return null;
+    }
+    if (creditLimit > 0 && calc.newBalance > creditLimit) {
+      const ok = window.confirm(
+        isUrdu
+          ? `انتباہ: ${selectedCustomer?.urduName || selectedCustomer?.name} کی ادھار حد Rs ${creditLimit.toLocaleString()} ہے، جبکہ نیا بقایا Rs ${calc.newBalance.toLocaleString()} ہو جائے گا۔ پھر بھی محفوظ کریں؟`
+          : `Warning: ${selectedCustomer?.name}'s credit limit is Rs ${creditLimit.toLocaleString()} but the new balance would be Rs ${calc.newBalance.toLocaleString()}. Save anyway?`
+      );
+      if (!ok) return null;
+    }
+
     const now = Date.now();
     if (now - saveLockRef.current < 1500) return null;
     saveLockRef.current = now;
@@ -561,9 +656,35 @@ export const POSView: React.FC<POSViewProps> = ({
       `شکریہ! ${biz.nameEn}`
     ].filter(Boolean).join('\n');
 
-    navigator.clipboard.writeText(text);
-    setCopiedNotice(true);
-    setTimeout(() => setCopiedNotice(false), 3000);
+    const showCopied = () => {
+      setCopiedNotice(true);
+      setTimeout(() => setCopiedNotice(false), 3000);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(showCopied).catch(() => {
+        // Clipboard permission denied (e.g. insecure context) — fall back
+        // to the legacy textarea + execCommand path instead of throwing.
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          showCopied();
+        } catch { /* copy unavailable — leave the notice off */ }
+      });
+    } else {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showCopied();
+      } catch { /* copy unavailable */ }
+    }
   };
 
   const handleShareWhatsAppDirect = (inv: Invoice) => {
@@ -730,41 +851,10 @@ export const POSView: React.FC<POSViewProps> = ({
         </div>
       )}
 
-      {/* QUICK VOICE DICTATION SAMPLE CHIPS & PROMPTS */}
-      <div className="bg-purple-50/70 p-3 rounded-2xl border border-purple-200 flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex items-center gap-2 text-xs text-purple-900 font-bold">
-          <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
-          <span>{isUrdu ? 'فوری وائس ان پٹ ٹیسٹ (1-کلک سیمپلز):' : 'Voice POS Quick Presets (1-Click Fill):'}</span>
-        </div>
-
-        <div className="flex flex-wrap gap-2 text-xs">
-          <button
-            type="button"
-            onClick={() => parseSpeechToInvoice('سمی خان اسی کلو بارہ ہزار دو سو ریٹ بیس ہزار نقد وصول')}
-            className="px-2.5 py-1 bg-white hover:bg-purple-100 border border-purple-300 rounded-lg text-purple-900 font-medium text-[11px] flex items-center gap-1.5 transition"
-          >
-            <span>🎙️</span>
-            <span>{isUrdu ? 'سمی خان: 80 کلو، 12,200 ریٹ، 20,000 وصول' : 'Sami Khan: 80kg, 12,200 rate, 20k cash'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => parseSpeechToInvoice('حاجی اسلم ساٹھ کلو تیرہ ہزار دو سو ریٹ نو ہزار نقد وصول')}
-            className="px-2.5 py-1 bg-white hover:bg-purple-100 border border-purple-300 rounded-lg text-purple-900 font-medium text-[11px] flex items-center gap-1.5 transition"
-          >
-            <span>🎙️</span>
-            <span>{isUrdu ? 'حاجی اسلم: 60 کلو، 13,200 ریٹ، 9,000 وصول' : 'Haji Aslam: 60kg, 13,200 rate, 9k cash'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => parseSpeechToInvoice('ملک برادرز اسی کلو بارہ ہزار ریٹ بیس ہزار وصول')}
-            className="px-2.5 py-1 bg-white hover:bg-purple-100 border border-purple-300 rounded-lg text-purple-900 font-medium text-[11px] flex items-center gap-1.5 transition"
-          >
-            <span>🎙️</span>
-            <span>{isUrdu ? 'ملک برادرز: 80 کلو، 12,000 ریٹ، 20,000 وصول' : 'Malik Bros: 80kg, 12k rate, 20k wasool'}</span>
-          </button>
-        </div>
+      {/* VOICE INPUT HINT (no demo customers/rates — values come from speech only) */}
+      <div className="bg-purple-50/70 p-3 rounded-2xl border border-purple-200 text-xs text-purple-900 font-bold flex items-center gap-2">
+        <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
+        <span>{isUrdu ? 'بول کر بتائیں: گاہک کا نام، وزن (کلو)، ریٹ اور وصولی — ڈیٹا صرف فارم میں بھرے گا، محفوظ نہیں ہوگا۔' : 'Speak the customer name, weight (kg), rate and cash received — voice only fills the form, it never saves.'}</span>
       </div>
 
       {/* CONVERTED ORDER NOTIFICATION BANNER */}
@@ -983,6 +1073,35 @@ export const POSView: React.FC<POSViewProps> = ({
             </div>
           </div>
 
+          {/* Stock availability (BR-LIVE) */}
+          {brLive ? (
+            <div className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-bold ${stockExceeded ? 'bg-rose-50 border-rose-300 text-rose-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+              <Scale className="w-4 h-4 shrink-0" />
+              <span>
+                {isUrdu
+                  ? `دستیاب اسٹاک (BR-LIVE): ${availableStockKg!.toLocaleString()} کلو (${availableStockBirds!.toLocaleString()} پرندے)${stockExceeded ? ` — بل کا وزن (${calc.netWeightKg.toLocaleString()} کلو) اسٹاک سے زیادہ ہے!` : ''}`
+                  : `Available stock (BR-LIVE): ${availableStockKg!.toLocaleString()} kg (${availableStockBirds!.toLocaleString()} birds)${stockExceeded ? ` — sale weight (${calc.netWeightKg.toLocaleString()} kg) exceeds stock!` : ''}`}
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-600 text-xs font-bold">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{isUrdu ? 'اسٹاک معلوم نہیں — Inventory میں اسٹاک درج کریں' : 'Stock unknown — set stock in Inventory'}</span>
+            </div>
+          )}
+
+          {/* Credit-limit warning (persistent while projected balance exceeds limit) */}
+          {creditExceeded && (
+            <div className="flex items-center gap-2 p-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-800 text-xs font-bold">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>
+                {isUrdu
+                  ? `انتباہ: ${selectedCustomer?.urduName || selectedCustomer?.name} کی ادھار حد Rs ${creditLimit.toLocaleString()} ہے — نیا بقایا Rs ${calc.newBalance.toLocaleString()} ہو جائے گا۔`
+                  : `Warning: ${selectedCustomer?.name}'s credit limit is Rs ${creditLimit.toLocaleString()} — the new balance would be Rs ${calc.newBalance.toLocaleString()}.`}
+              </span>
+            </div>
+          )}
+
           {/* Warning if Sale Rate < Mandi Rate */}
           {saleRate < mandiRate && (
             <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-800 text-xs">
@@ -1014,9 +1133,9 @@ export const POSView: React.FC<POSViewProps> = ({
                   type="number"
                   step="0.5"
                   value={weightKg || ''}
-                  onChange={(e) => setWeightKg(parseFloat(e.target.value) || 0)}
+                  onChange={(e) => handleWeightChange(parseFloat(e.target.value) || 0)}
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 text-base font-black text-slate-900 font-mono focus:ring-2 focus:ring-emerald-500"
-                  placeholder="80"
+                  placeholder="0"
                 />
               </div>
 
@@ -1047,7 +1166,7 @@ export const POSView: React.FC<POSViewProps> = ({
                 <button
                   key={lot.kg}
                   type="button"
-                  onClick={() => setWeightKg(lot.kg)}
+                  onClick={() => handleWeightChange(lot.kg)}
                   className={`text-[10px] px-2.5 py-1 rounded-lg font-mono font-bold transition ${
                     weightKg === lot.kg
                       ? 'bg-emerald-600 text-white shadow-sm'
@@ -1433,8 +1552,17 @@ export const POSView: React.FC<POSViewProps> = ({
             <FileText className="w-4 h-4 text-emerald-600" />
             <span>{isUrdu ? 'حالیہ جاری کردہ انوائسز (Recent Invoices)' : 'Recent Invoices'}</span>
           </h3>
-          <span className="text-xs text-slate-500">
-            {liveInvoices.length} {isUrdu ? 'بل کل' : 'total'}
+          <span className="text-xs text-slate-500 flex items-center gap-2">
+            <span>{liveInvoices.length} {isUrdu ? 'زندہ' : 'live'} · {voidedInvoices.length} {isUrdu ? 'وائڈ' : 'voided'}</span>
+            {voidedInvoices.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowVoided((v) => !v)}
+                className="px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 font-bold text-slate-700"
+              >
+                {showVoided ? (isUrdu ? 'وائڈ چھپائیں' : 'Hide voided') : (isUrdu ? 'وائڈ دکھائیں' : 'Show voided')}
+              </button>
+            )}
           </span>
         </div>
 
@@ -1448,18 +1576,25 @@ export const POSView: React.FC<POSViewProps> = ({
                 <th className="p-2.5 border-b text-right">{isUrdu ? 'ریٹ' : 'Rate'}</th>
                 <th className="p-2.5 border-b text-right">{isUrdu ? 'وزن' : 'Weight'}</th>
                 <th className="p-2.5 border-b text-right">{isUrdu ? 'کل رقم' : 'Total'}</th>
-                <th className="p-2.5 border-b text-right">{isUrdu ? 'وصولی' : 'Received'}</th>
+                <th className="p-2.5 border-b text-right">{isUrdu ? 'موقع پر وصولی' : 'Paid at sale'}</th>
                 <th className="p-2.5 border-b text-right">{isUrdu ? 'نیا بقایا' : 'New Balance'}</th>
                 <th className="p-2.5 border-b text-center">{isUrdu ? 'اقدامات' : 'Actions'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {liveInvoices.slice().reverse().map((inv) => {
+              {(showVoided ? invoices : liveInvoices).slice().reverse().map((inv) => {
                 const totRec = (inv.receivedCash || 0) + (inv.receivedAC || 0);
                 const cust = parties.find((p) => p.id === inv.customerId);
                 return (
-                  <tr key={inv.id} className="hover:bg-slate-50 transition">
-                    <td className="p-2.5 font-mono font-bold text-slate-900">{inv.invoiceNumber}</td>
+                  <tr key={inv.id} className={`hover:bg-slate-50 transition ${inv.isVoid ? 'opacity-55 bg-slate-50' : ''}`}>
+                    <td className="p-2.5 font-mono font-bold text-slate-900">
+                      {inv.invoiceNumber}
+                      {inv.isVoid && (
+                        <span className="ml-1 text-[9px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded">
+                          {isUrdu ? 'وائڈ' : 'VOID'}
+                        </span>
+                      )}
+                    </td>
                     <td className="p-2.5 text-slate-600">{inv.invoiceDate}</td>
                     <td className="p-2.5 font-semibold text-slate-800">
                       {inv.customerUrduName ? `${inv.customerUrduName}` : inv.customerName}

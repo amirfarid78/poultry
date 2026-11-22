@@ -8,7 +8,7 @@
 
 import { supabase } from './supabase';
 import { persist, withUuid } from './remote';
-import { clearOutbox } from './offline';
+import { clearOutbox, isUuid } from './offline';
 import type { OutboxTable } from './db';
 import type { AppState } from '../services/store';
 import { createBlankState } from '../services/store';
@@ -42,6 +42,114 @@ export interface ImportResult {
 }
 
 /**
+ * Re-UUID a restored backup state so every non-UUID (seed / legacy local)
+ * id becomes a fresh UUID — and rewrite every reference to point at the new
+ * ids, so the restored state stays internally consistent.
+ *
+ * Pure function (no I/O): the parent calls it in App/SettingsView BEFORE
+ * onImportState, and importBackupToOutbox applies it again (idempotent —
+ * ids that are already UUIDs map to themselves, so a second pass is a
+ * no-op). References to profiles (driverId / bookerId / lockedBy) are left
+ * alone: profiles are not part of the backup state, so there is nothing to
+ * remap them to. Accounts carry no id (keyed by account_code) and are
+ * passed through unchanged.
+ */
+export function remapStateIds(state: AppState): { state: AppState; idMap: Record<string, string> } {
+  const idMap: Record<string, string> = {};
+  const collect = (id: unknown): void => {
+    if (typeof id === 'string' && id && !isUuid(id) && !idMap[id]) {
+      idMap[id] = crypto.randomUUID();
+    }
+  };
+  // First pass: one fresh UUID per non-UUID id, across all collections.
+  for (const p of state.parties ?? []) collect(p.id);
+  for (const i of state.invoices ?? []) collect(i.id);
+  for (const r of state.receipts ?? []) collect(r.id);
+  for (const l of state.ledgerEntries ?? []) collect(l.id);
+  for (const p of state.purchases ?? []) collect(p.id);
+  for (const e of state.expenses ?? []) collect(e.id);
+  for (const g of state.generalEntries ?? []) collect(g.id);
+  for (const o of state.orders ?? []) collect(o.id);
+  for (const v of state.vehicles ?? []) collect(v.id);
+  for (const t of state.trips ?? []) collect(t.id);
+  for (const i of state.inventory ?? []) collect(i.id);
+  for (const e of state.employees ?? []) collect(e.id);
+  if (state.dayClosing) collect(state.dayClosing.id);
+
+  // Second pass: rewrite ids + every reference that points at a remapped id.
+  const remap = (id: string | undefined): string | undefined =>
+    id !== undefined && idMap[id] !== undefined ? idMap[id] : id;
+  const remapId = (id: string): string => idMap[id] ?? id;
+
+  const next: AppState = {
+    ...state,
+    parties: (state.parties ?? []).map((p) => ({ ...p, id: remapId(p.id) })),
+    invoices: (state.invoices ?? []).map((i) => ({
+      ...i,
+      id: remapId(i.id),
+      customerId: remap(i.customerId) ?? i.customerId,
+      vehicleId: remap(i.vehicleId),
+      driverId: remap(i.driverId),
+    })),
+    receipts: (state.receipts ?? []).map((r) => ({
+      ...r,
+      id: remapId(r.id),
+      partyId: remap(r.partyId) ?? r.partyId,
+    })),
+    ledgerEntries: (state.ledgerEntries ?? []).map((l) => ({
+      ...l,
+      id: remapId(l.id),
+      partyId: remap(l.partyId) ?? l.partyId,
+      refId: remap(l.refId),
+    })),
+    purchases: (state.purchases ?? []).map((p) => ({
+      ...p,
+      id: remapId(p.id),
+      supplierId: remap(p.supplierId) ?? p.supplierId,
+    })),
+    expenses: (state.expenses ?? []).map((e) => ({
+      ...e,
+      id: remapId(e.id),
+      vehicleId: remap(e.vehicleId),
+    })),
+    generalEntries: (state.generalEntries ?? []).map((g) => ({
+      ...g,
+      id: remapId(g.id),
+      partyId: remap(g.partyId),
+    })),
+    orders: (state.orders ?? []).map((o) => ({
+      ...o,
+      id: remapId(o.id),
+      customerId: remap(o.customerId) ?? o.customerId,
+      bookerId: remap(o.bookerId) ?? o.bookerId,
+      assignedVehicleId: remap(o.assignedVehicleId),
+      assignedDriverId: remap(o.assignedDriverId),
+    })),
+    vehicles: (state.vehicles ?? []).map((v) => ({
+      ...v,
+      id: remapId(v.id),
+      driverId: remap(v.driverId),
+    })),
+    trips: (state.trips ?? []).map((t) => ({
+      ...t,
+      id: remapId(t.id),
+      vehicleId: remap(t.vehicleId) ?? t.vehicleId,
+      driverId: remap(t.driverId) ?? t.driverId,
+      stops: (t.stops ?? []).map((s) => ({
+        ...s,
+        customerId: remap(s.customerId) ?? s.customerId,
+      })),
+    })),
+    inventory: (state.inventory ?? []).map((i) => ({ ...i, id: remapId(i.id) })),
+    employees: (state.employees ?? []).map((e) => ({ ...e, id: remapId(e.id) })),
+    dayClosing: state.dayClosing
+      ? { ...state.dayClosing, id: remapId(state.dayClosing.id) }
+      : state.dayClosing,
+  };
+  return { state: next, idMap };
+}
+
+/**
  * Queue every record of a validated backup state for background sync.
  *
  * Each doc is normalized to a UUID id (server PKs are UUID) and upserted via
@@ -56,11 +164,14 @@ export interface ImportResult {
  * shape src/lib/sync.ts expects for this table.
  */
 export async function importBackupToOutbox(state: AppState): Promise<ImportResult> {
+  // Re-UUID the backup first (idempotent — see remapStateIds) so the
+  // outbox payloads match the local state the parent just restored.
+  const src = remapStateIds(state).state;
   const result: ImportResult = { imported: 0, tables: {}, errors: [], skipped: 0 };
 
   for (const [key, table] of Object.entries(COLLECTION_TABLE)) {
     try {
-      const raw: unknown = (state as unknown as Record<string, unknown>)[key];
+      const raw: unknown = (src as unknown as Record<string, unknown>)[key];
       const docs = Array.isArray(raw) ? raw : raw ? [raw] : [];
       let n = 0;
       for (const doc of docs) {
@@ -86,8 +197,11 @@ export async function importBackupToOutbox(state: AppState): Promise<ImportResul
 
   // chart_of_accounts has no outbox table; upsert directly (owner-only UI).
   // Kept separate so a failure here never affects the outbox tables above.
+  // The backup id is deliberately omitted: accounts are keyed by
+  // account_code and the DB defaults a fresh UUID for new rows (sending a
+  // stale/seed id verbatim used to collide with or overwrite live rows).
   try {
-    const accounts = Array.isArray(state.accounts) ? state.accounts : [];
+    const accounts = Array.isArray(src.accounts) ? src.accounts : [];
     let n = 0;
     for (const a of accounts) {
       if (!a || typeof a !== 'object') {
@@ -95,14 +209,13 @@ export async function importBackupToOutbox(state: AppState): Promise<ImportResul
         continue;
       }
       const row = {
-        id: (a as { id?: string }).id,
         account_code: (a as { code?: string }).code,
         name: (a as { name?: string }).name,
         urdu_name: (a as { urduName?: string }).urduName,
         category: (a as { category?: string }).category,
         balance: (a as { balance?: number }).balance ?? 0,
       };
-      if (!row.id || !row.account_code) {
+      if (!row.account_code) {
         result.skipped++;
         continue;
       }

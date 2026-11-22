@@ -1,4 +1,5 @@
 import { LedgerEntry } from '../../types';
+import { todayPKT } from '../../utils/calculations';
 
 export type LedgerTypeFilter =
   | 'all'
@@ -23,40 +24,46 @@ export interface LedgerFilterState {
 
 export const DEFAULT_LEDGER_FILTER: LedgerFilterState = {
   startDate: '',
-  endDate: new Date().toISOString().split('T')[0],
+  // PKT today, not UTC today: a UTC date flips at 05:00 PKT and would hide
+  // (or wrongly include) entries around midnight.
+  endDate: todayPKT(),
   preset: 'all',
   typeFilter: 'all',
   searchTerm: '',
   showVoided: false,
 };
 
-const toISODate = (d: Date) => d.toISOString().split('T')[0];
+/** Shift a YYYY-MM-DD date by whole days (UTC-noon arithmetic, no DST). */
+const addDays = (iso: string, days: number): string => {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().split('T')[0];
+};
 
 /** Resolve a date preset into a concrete [start, end] range ('' = open). */
 export function presetRange(preset: LedgerDatePreset): { startDate: string; endDate: string } {
-  const today = new Date();
+  // All presets anchor on the PKT date, not the UTC date.
+  const today = todayPKT();
   switch (preset) {
     case 'today':
-      return { startDate: toISODate(today), endDate: toISODate(today) };
+      return { startDate: today, endDate: today };
     case 'yesterday': {
-      const y = new Date(today);
-      y.setDate(y.getDate() - 1);
-      return { startDate: toISODate(y), endDate: toISODate(y) };
+      const y = addDays(today, -1);
+      return { startDate: y, endDate: y };
     }
     case 'last7': {
-      const s = new Date(today);
-      s.setDate(s.getDate() - 6);
-      return { startDate: toISODate(s), endDate: toISODate(today) };
+      return { startDate: addDays(today, -6), endDate: today };
     }
     case 'month':
       return {
-        startDate: `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`,
-        endDate: toISODate(today),
+        startDate: `${today.slice(0, 8)}01`,
+        endDate: today,
       };
     case 'all':
-      return { startDate: '', endDate: toISODate(today) };
+      // Open-ended: a cap at today hid future-dated entries.
+      return { startDate: '', endDate: '' };
     default:
-      return { startDate: '', endDate: toISODate(today) };
+      return { startDate: '', endDate: today };
   }
 }
 

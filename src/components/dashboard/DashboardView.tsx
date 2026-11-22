@@ -9,9 +9,11 @@ import {
   InventoryItem, 
   AccountItem, 
   UserRole,
-  ExpenseItem 
+  ExpenseItem,
+  LedgerEntry
 } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl, computeTodayKpis } from '../../utils/calculations';
+import { downloadFile } from '../../utils/exportImport';
 import { useBusiness } from '../../context/BusinessContext';
 import { 
   ResponsiveContainer, 
@@ -22,9 +24,6 @@ import {
   Bar, 
   LineChart, 
   Line, 
-  PieChart, 
-  Pie, 
-  Cell, 
   XAxis, 
   YAxis, 
   Tooltip, 
@@ -69,6 +68,7 @@ interface DashboardViewProps {
   currentRole: UserRole;
   language: 'en' | 'ur';
   expenses?: ExpenseItem[];
+  ledgerEntries: LedgerEntry[];
   onNavigateTab: (tab: string) => void;
   onOpenReceiptModal: (partyId?: string) => void;
 }
@@ -86,12 +86,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   currentRole,
   language,
   expenses,
+  ledgerEntries,
   onNavigateTab,
   onOpenReceiptModal
 }) => {
   const isUrdu = language === 'ur';
   const { settings: biz } = useBusiness();
-  const [dateRange, setDateRange] = useState<'today' | 'week' | 'month'>('today');
   const [globalSearch, setGlobalSearch] = useState<string>('');
   const [activeReportTab, setActiveReportTab] = useState<'sales' | 'customers' | 'margin' | 'stock'>('sales');
 
@@ -140,7 +140,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     receipts,
     todayStr
   );
-  const estimatedProfitToday = Math.round((todaySalesKg * mandiMarginSpread) / 40);
+  // Signed number helper: a negative spread must render "-200", never "+-200".
+  const signed = (v: number) => `${v >= 0 ? '+' : '-'}${Math.abs(v).toLocaleString()}`;
+  // Estimated profit today uses each invoice's OWN mandi rate — the spread
+  // against today's rate would misprice every earlier invoice in the day.
+  const todayInvoices = liveInvoices.filter((inv) => inv.invoiceDate === todayStr);
+  const estimatedProfitToday = Math.round(
+    todayInvoices.reduce(
+      (s, inv) => s + (((inv.saleRatePer40kg || 0) - (inv.mandiRatePer40kg || 0)) * (inv.netWeightKg || 0)) / 40,
+      0
+    )
+  );
+  // Margin tab figures are TODAY's — not the all-time average sale rate.
+  const todayAvgSaleRate = todayInvoices.length > 0
+    ? Math.round(todayInvoices.reduce((s, i) => s + (i.saleRatePer40kg || 0), 0) / todayInvoices.length)
+    : 0;
+  const todayMandiMarginSpread = todayAvgSaleRate - todayMandiRate;
   const URDU_WEEKDAYS = ['اتوار', 'پیر', 'منگل', 'بدھ', 'جمعرات', 'جمعہ', 'ہفتہ'];
   const EN_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const dayLabel = (dateStr: string, i: number): string => {
@@ -150,7 +165,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   // Sales & volume trend computed from REAL invoices. Empty days show zero —
-  // no demo data is ever injected.
+  // no demo data is ever injected. The mandi line is the average of that
+  // day's own invoices' mandi rates (0 = no invoices that day, i.e. no data).
   const salesTrendData = last7DayKeys.map((dateStr, i) => {
     const dayInvoices = liveInvoices.filter((inv) => inv.invoiceDate === dateStr);
     const salesRs = dayInvoices.reduce((s, inv) => s + (inv.totalAmount || 0), 0);
@@ -158,23 +174,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const saleRate = dayInvoices.length > 0
       ? Math.round(dayInvoices.reduce((s, inv) => s + (inv.saleRatePer40kg || 0), 0) / dayInvoices.length)
       : 0;
+    const mandiRate = dayInvoices.length > 0
+      ? Math.round(dayInvoices.reduce((s, inv) => s + (inv.mandiRatePer40kg || 0), 0) / dayInvoices.length)
+      : 0;
     return {
       day: dayLabel(dateStr, i),
       salesRs,
       weightKg,
-      mandiRate: i === 6 ? todayMandiRate : 0,
+      mandiRate,
       saleRate,
     };
   });
 
   // Daily Profit Trend computed from REAL invoices + expenses.
-  // Gross gain per invoice ≈ (saleRate − mandiRate) × kg ÷ 40.
+  // Gross gain per invoice ≈ (saleRate − that invoice's mandiRate) × kg ÷ 40.
   const dailyProfitTrendData = last7DayKeys.map((dateStr, i) => {
     const dayInvoices = liveInvoices.filter((inv) => inv.invoiceDate === dateStr);
     const dayExpenses = (expenses ?? []).filter((e) => e.date === dateStr);
     const operatingExpenses = dayExpenses.reduce((s, e) => s + (e.amount || 0), 0);
     const grossGain = dayInvoices.reduce((s, inv) => {
-      const margin = (inv.saleRatePer40kg || 0) - todayMandiRate;
+      const margin = (inv.saleRatePer40kg || 0) - (inv.mandiRatePer40kg || 0);
       return s + Math.round((margin * (inv.netWeightKg || 0)) / 40);
     }, 0);
     const netGain = grossGain - operatingExpenses;
@@ -195,29 +214,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const total7DayNetGain = dailyProfitTrendData.reduce((s, d) => s + d.netGain, 0);
   const total7DayExpenses = dailyProfitTrendData.reduce((s, d) => s + d.operatingExpenses, 0);
   const total7DayGrossGain = dailyProfitTrendData.reduce((s, d) => s + d.grossGain, 0);
-  const avgExpenseRatio = Math.round((total7DayExpenses / total7DayGrossGain) * 100);
-
-  // Stock Distribution Pie Data
-  const stockPieData = [
-    { name: 'Shed 1 Broiler', urduName: 'شیڈ 1 برائلر', value: 6450, color: '#10b981' },
-    { name: 'Shed 2 Broiler', urduName: 'شیڈ 2 برائلر', value: 4200, color: '#3b82f6' },
-    { name: 'Dressed Meat', urduName: 'صاف گوشت', value: 380, color: '#f59e0b' },
-    { name: 'Desi Chicken', urduName: 'دیسی مرغی', value: 450, color: '#8b5cf6' },
-  ];
-
-  // Aging Data
-  const agingData = [
-    { bracket: '0-7 Days', urduBracket: 'تا 7 دن', amount: Math.round(totalReceivables * 0.45) },
-    { bracket: '8-15 Days', urduBracket: '8 تا 15 دن', amount: Math.round(totalReceivables * 0.30) },
-    { bracket: '16-30 Days', urduBracket: '16 تا 30 دن', amount: Math.round(totalReceivables * 0.18) },
-    { bracket: '30+ Days', urduBracket: '30 دن زائد', amount: Math.round(totalReceivables * 0.07) },
-  ];
+  const avgExpenseRatio = total7DayGrossGain > 0 ? Math.round((total7DayExpenses / total7DayGrossGain) * 100) : 0;
 
   // Top Debtors Ranking
   const topDebtors = [...customers]
     .sort((a, b) => b.currentBalance - a.currentBalance)
     .filter((c) => c.currentBalance > 0)
     .slice(0, 5);
+
+  // Real ledger totals for one party — never a fabricated offset.
+  const ledgerTotalsFor = (partyId: string) => {
+    const entries = ledgerEntries.filter((e) => e.partyId === partyId && !e.isVoid);
+    return {
+      totalDebit: entries.reduce((s, e) => s + (e.debit || 0), 0),
+      totalCredit: entries.reduce((s, e) => s + (e.credit || 0), 0),
+    };
+  };
 
   // Filtered Items for Global Search
   const searchResults = globalSearch.trim()
@@ -233,14 +245,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   const handleExportCSV = (filename: string, rows: any[][], headers: string[]) => {
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `${filename}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    downloadFile(csvContent, `${filename}.csv`, 'text/csv;charset=utf-8;');
   };
 
   return (
@@ -452,7 +458,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
           <div className="text-2xl font-black text-emerald-900 font-mono flex items-center gap-1.5">
-            <span>+{mandiMarginSpread}</span>
+            <span>{signed(mandiMarginSpread)}</span>
             <span className="text-xs text-slate-500 font-sans">Rs/40kg</span>
           </div>
           <div className="flex items-center justify-between text-xs text-slate-600 mt-2 pt-2 border-t border-slate-100 font-mono">
@@ -851,13 +857,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <td className="p-2.5 text-center">
                       <button
                         onClick={() => {
+                          const totals = ledgerTotalsFor(c.id);
                           const url = generateLedgerWhatsAppUrl({
                             phone: c.whatsapp,
                             partyName: c.urduName || c.name,
                             asOfDate: new Date().toISOString().split('T')[0],
                             currentBalance: c.currentBalance,
-                            totalDebit: c.currentBalance + 50000,
-                            totalCredit: 50000,
+                            totalDebit: totals.totalDebit,
+                            totalCredit: totals.totalCredit,
                             businessName: `${biz.nameUr} (${biz.nameEn})`,
                           });
                           window.open(url, '_blank');
@@ -1042,18 +1049,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
               <span className="text-[11px] font-bold text-slate-500 block uppercase">
-                {isUrdu ? 'اوسط سیل ریٹ' : 'Avg Selling Rate'}
+                {isUrdu ? 'آج کا اوسط سیل ریٹ' : 'Today\'s Avg Selling Rate'}
               </span>
               <p className="text-xl font-black text-emerald-700 font-mono mt-1">
-                Rs {avgSaleRate.toLocaleString()} <span className="text-xs text-slate-500">/40kg</span>
+                Rs {todayAvgSaleRate.toLocaleString()} <span className="text-xs text-slate-500">/40kg</span>
               </p>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
               <span className="text-[11px] font-bold text-slate-500 block uppercase">
-                {isUrdu ? 'خالص اوسط نفع فی کلو' : 'Net Margin per Kg'}
+                {isUrdu ? 'آج کا خالص اوسط نفع فی کلو' : 'Today\'s Net Margin per Kg'}
               </span>
               <p className="text-xl font-black text-emerald-800 font-mono mt-1">
-                Rs {(mandiMarginSpread / 40).toFixed(2)} / kg
+                Rs {(todayMandiMarginSpread / 40).toFixed(2)} / kg
               </p>
             </div>
           </div>
@@ -1061,19 +1068,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         {/* REPORT TAB 4: LIVE STOCK & SHEDS */}
         {activeReportTab === 'stock' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            {inventory.map((item) => (
-              <div key={item.id} className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
-                <span className="text-[10px] font-mono font-bold text-slate-500 uppercase">{item.code}</span>
-                <h4 className="font-bold text-slate-900 text-xs">{item.urduName || item.name}</h4>
-                <div className="text-base font-black text-emerald-800 font-mono pt-1">
-                  {item.currentWeightKg.toLocaleString()} kg
-                </div>
-                <div className="text-[11px] text-slate-500 font-mono">
-                  {item.currentCount} {item.unit} | {(item.currentWeightKg / 40).toFixed(1)} Mann
-                </div>
+          <div className="space-y-3">
+            {inventory.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
+                {isUrdu
+                  ? 'اسٹاک کا کوئی ریکارڈ نہیں — انوینٹری میں BR-LIVE اسٹاک درج کریں۔'
+                  : 'No stock on record — set BR-LIVE stock in Inventory.'}
               </div>
-            ))}
+            ) : (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {inventory.map((item) => (
+                    <div key={item.id} className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                      <span className="text-[10px] font-mono font-bold text-slate-500 uppercase">{item.code}</span>
+                      <h4 className="font-bold text-slate-900 text-xs">{item.urduName || item.name}</h4>
+                      <div className="text-base font-black text-emerald-800 font-mono pt-1">
+                        {item.currentWeightKg.toLocaleString()} kg
+                      </div>
+                      <div className="text-[11px] text-slate-500 font-mono">
+                        {item.currentCount} {item.unit} | {(item.currentWeightKg / 40).toFixed(1)} Mann
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900">
+                  <span>{isUrdu ? 'کل اسٹاک:' : 'Total stock:'}</span>
+                  <span className="font-mono">
+                    {inventory.reduce((s, i) => s + (i.currentWeightKg || 0), 0).toLocaleString()} kg
+                    {' | '}
+                    {inventory.reduce((s, i) => s + (i.currentCount || 0), 0).toLocaleString()} {isUrdu ? 'پرندے' : 'birds'}
+                    {' | '}
+                    {(inventory.reduce((s, i) => s + (i.currentWeightKg || 0), 0) / 40).toFixed(1)} Mann
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

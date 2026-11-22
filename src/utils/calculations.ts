@@ -82,8 +82,112 @@ export function normalizePakistanPhone(phone: string): string {
   } else if (clean.startsWith('3') && clean.length === 10) {
     clean = '92' + clean;
   }
-  
+
   return clean;
+}
+
+/**
+ * True only for a real Pakistani MOBILE number: after normalization it must
+ * start with '923' and be exactly 12 digits. Landlines (e.g. '042...',
+ * which normalizePakistanPhone returns unchanged) fail this check, so a
+ * wa.me link is never built for a number WhatsApp cannot reach.
+ * normalizePakistanPhone itself is unchanged — other callers depend on it.
+ */
+export function isValidMobilePK(phone: string): boolean {
+  const norm = normalizePakistanPhone(phone);
+  return norm.startsWith('923') && norm.length === 12 && /^\d+$/.test(norm);
+}
+
+/** WhatsApp-ready number, or '' when the phone is not a valid PK mobile. */
+export function toWhatsAppNumber(phone: string): string {
+  return isValidMobilePK(phone) ? normalizePakistanPhone(phone) : '';
+}
+
+/** Format a Date as YYYY-MM-DD in Asia/Karachi (en-CA gives ISO order). */
+export function toPKTDate(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Karachi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
+/** Today's date in Asia/Karachi as YYYY-MM-DD. */
+export function todayPKT(): string {
+  return toPKTDate(new Date());
+}
+
+export interface AgingEntry {
+  entryDate: string; // YYYY-MM-DD
+  debit: number;
+  credit: number;
+  isVoid?: boolean;
+}
+
+export interface AgingBuckets {
+  current: number; // 0-7 days old
+  days8to15: number;
+  days16to30: number;
+  days30plus: number;
+}
+
+const parseISODate = (s: string): number => {
+  const [y, m, d] = s.split('-').map(Number);
+  if (!y || !m || !d) return NaN;
+  return Date.UTC(y, m - 1, d);
+};
+
+/**
+ * FIFO aging buckets for one party's ledger. Non-void debit entries are
+ * lots (oldest first); credits, in chronological order, consume the oldest
+ * lots first. Whatever is left in each lot is bucketed by its age in days
+ * vs `today` (0-7 current, 8-15, 16-30, 30+). Pure function.
+ */
+export function computeAgingBuckets(
+  entries: AgingEntry[],
+  today: string
+): AgingBuckets {
+  const todayMs = parseISODate(today);
+  const lots: { dateMs: number; amount: number }[] = [];
+  for (const e of entries) {
+    if (e.isVoid) continue;
+    const debit = e.debit || 0;
+    if (debit > 0) {
+      const dateMs = parseISODate(e.entryDate);
+      if (!Number.isNaN(dateMs)) lots.push({ dateMs, amount: debit });
+    }
+  }
+  lots.sort((a, b) => a.dateMs - b.dateMs);
+
+  // Credits consume the oldest lots first (FIFO), in chronological order.
+  const credits = entries
+    .filter((e) => !e.isVoid && (e.credit || 0) > 0)
+    .map((e) => ({ dateMs: parseISODate(e.entryDate), amount: e.credit || 0 }))
+    .filter((c) => !Number.isNaN(c.dateMs))
+    .sort((a, b) => a.dateMs - b.dateMs);
+  let lotIdx = 0;
+  for (const c of credits) {
+    let remaining = c.amount;
+    while (remaining > 0 && lotIdx < lots.length) {
+      const take = Math.min(lots[lotIdx].amount, remaining);
+      lots[lotIdx].amount -= take;
+      remaining -= take;
+      if (lots[lotIdx].amount <= 0) lotIdx++;
+    }
+  }
+
+  const buckets: AgingBuckets = { current: 0, days8to15: 0, days16to30: 0, days30plus: 0 };
+  if (Number.isNaN(todayMs)) return buckets;
+  for (const lot of lots) {
+    if (lot.amount <= 0) continue;
+    const ageDays = Math.floor((todayMs - lot.dateMs) / 86400000);
+    if (ageDays <= 7) buckets.current += lot.amount;
+    else if (ageDays <= 15) buckets.days8to15 += lot.amount;
+    else if (ageDays <= 30) buckets.days16to30 += lot.amount;
+    else buckets.days30plus += lot.amount;
+  }
+  return buckets;
 }
 
 /**

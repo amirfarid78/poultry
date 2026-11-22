@@ -30,6 +30,13 @@ export class ErrorBoundary extends React.Component<Props, State> {
   };
 
   private handleResetData = () => {
+    // Destructive and irreversible: unsynced outbox writes live only in
+    // localStorage/IndexedDB, so confirm explicitly before wiping them.
+    const confirmed = window.confirm(
+      'Clear all local data and reload?\n\nAny changes that have not synced to the server yet will be permanently lost. ' +
+        'Only continue if you have confirmed your data is safely on the server.'
+    );
+    if (!confirmed) return;
     try {
       const keys: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -83,7 +90,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
               onClick={this.handleResetData}
               className="flex-1 px-4 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold rounded-xl text-sm"
             >
-              Clear local data & reload
+              Clear local data & reload — unsynced changes will be lost
             </button>
           </div>
         </div>

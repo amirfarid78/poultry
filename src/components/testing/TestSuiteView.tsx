@@ -69,6 +69,13 @@ export const TestSuiteView: React.FC<{ language: 'en' | 'ur' }> = ({ language })
         </span>
       </div>
 
+      {/* Honest scope note: these are formula checks on fixed sample numbers. */}
+      <p className="text-[11px] text-slate-500 px-1 -mt-3">
+        {isUrdu
+          ? 'نوٹ: یہ ٹیسٹ مقررہ نمونہ اعداد سے فارمولوں کی تصدیق کرتے ہیں، لائیو کاروباری ڈیٹا سے نہیں۔'
+          : 'Note: These tests verify formulas with fixed sample numbers, not live business data.'}
+      </p>
+
       {/* Individual Test Cards */}
       <div className="space-y-3">
         {testResults.map((t, idx) => (

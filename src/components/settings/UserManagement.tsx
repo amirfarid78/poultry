@@ -70,6 +70,19 @@ export const UserManagement: React.FC<{ language: 'en' | 'ur'; currentUserId: st
   };
 
   const handleRoleChange = async (p: StaffProfile, role: UserRole) => {
+    // Last-owner guard: the old code only blocked SELF-demotion. Demoting
+    // (or disabling) the last active owner — even another account — would
+    // lock everyone out of owner screens, so it is blocked outright.
+    if (p.role === 'owner' && role !== 'owner') {
+      const activeOwners = profiles.filter((x) => x.role === 'owner' && x.isActive);
+      if (activeOwners.length <= 1) {
+        setNotice(isUrdu
+          ? 'آخری مالک کا رول نہیں ہٹایا جا سکتا — پہلے کسی اور کو مالک بنائیں۔'
+          : 'Cannot remove the last owner’s role — make someone else an owner first.');
+        setTimeout(() => setNotice(null), 5000);
+        return;
+      }
+    }
     if (p.id === currentUserId && role !== 'owner') {
       if (!window.confirm(isUrdu ? 'آپ اپنا اپنا مالک رول ہٹا رہے ہیں — جاری رکھیں؟' : 'You are removing your own owner role — continue?')) return;
     }
@@ -83,6 +96,16 @@ export const UserManagement: React.FC<{ language: 'en' | 'ur'; currentUserId: st
   };
 
   const handleToggleActive = async (p: StaffProfile) => {
+    if (p.role === 'owner' && p.isActive) {
+      const activeOwners = profiles.filter((x) => x.role === 'owner' && x.isActive);
+      if (activeOwners.length <= 1) {
+        setNotice(isUrdu
+          ? 'آخری مالک کو غیر فعال نہیں کیا جا سکتا — پہلے کسی اور کو مالک بنائیں۔'
+          : 'Cannot disable the last owner — make someone else an owner first.');
+        setTimeout(() => setNotice(null), 5000);
+        return;
+      }
+    }
     try {
       await setStaffActive(supabase, p.id, !p.isActive);
       setProfiles((prev) => prev.map((x) => (x.id === p.id ? { ...x, isActive: !x.isActive } : x)));
@@ -96,7 +119,10 @@ export const UserManagement: React.FC<{ language: 'en' | 'ur'; currentUserId: st
     try {
       await deleteUserInvite(supabase, id);
       setInvites((prev) => prev.filter((x) => x.id !== id));
-    } catch { /* ignore */ }
+    } catch (e: any) {
+      setNotice(e?.message || 'Could not delete invite');
+      setTimeout(() => setNotice(null), 4000);
+    }
   };
 
   if (loading) {
@@ -119,8 +145,8 @@ export const UserManagement: React.FC<{ language: 'en' | 'ur'; currentUserId: st
         </h3>
         <p className="text-[11px] text-slate-500 mb-3">
           {isUrdu
-            ? 'ای میل درج کریں اور رول منتخب کریں — صارف اسی ای میل سے سائن اپ کرے گا اور خودکار طور پر یہ رول مل جائے گا۔'
-            : 'Enter their email and pick a role — they sign up with that email and automatically get the role.'}
+            ? 'ای میل درج کریں اور رول منتخب کریں — دعوت محفوظ ہو جائے گی؛ کوئی ای میل نہیں بھیجی جاتی (ای میل بھیجنا بند ہے)۔ صارف اسی ای میل سے سائن اپ کرے گا اور خودکار طور پر یہ رول مل جائے گا۔'
+            : 'Enter their email and pick a role — the invite is saved (no email is sent; email sending is off). They sign up with that email and automatically get the role.'}
         </p>
         <form onSubmit={handleInvite} className="flex flex-wrap gap-2">
           <input
@@ -137,7 +163,7 @@ export const UserManagement: React.FC<{ language: 'en' | 'ur'; currentUserId: st
           <button type="submit" disabled={inviting}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
             <Mail className="w-4 h-4" />
-            {inviting ? '...' : (isUrdu ? 'دعوت بھیجیں' : 'Send Invite')}
+            {inviting ? '...' : (isUrdu ? 'دعوت محفوظ کریں' : 'Save Invite')}
           </button>
         </form>
 

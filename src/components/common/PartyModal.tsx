@@ -63,8 +63,10 @@ export const PartyModal: React.FC<PartyModalProps> = ({
       setCity('Lahore');
       setOpeningBalance(0);
       setBalanceType('receivable');
-      setCreditLimit(partyType === 'customer' ? 200000 : 1000000);
-      setDefaultKilo(partyType === 'customer' ? 80 : 1000);
+      // Use defaultPartyType (the prop), not the stale partyType state —
+      // the reset branch runs before setPartyType above takes effect.
+      setCreditLimit(defaultPartyType === 'customer' ? 200000 : 1000000);
+      setDefaultKilo(defaultPartyType === 'customer' ? 80 : 1000);
       setCnic('');
     }
   }, [initialParty, defaultPartyType, isOpen]);

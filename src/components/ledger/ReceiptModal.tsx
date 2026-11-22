@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Party, ReceiptVoucher, PaymentMode } from '../../types';
-import { formatPKR } from '../../utils/calculations';
+import { formatPKR, todayPKT } from '../../utils/calculations';
 import { nextDocNumber } from '../../utils/docNumbers';
 import { Receipt, X, CheckCircle, CreditCard, Banknote, Building } from 'lucide-react';
 
@@ -23,17 +23,24 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   onSaveReceipt,
   language
 }) => {
-  if (!isOpen) return null;
   const isUrdu = language === 'ur';
 
   const [partyId, setPartyId] = useState<string>(preselectedPartyId || parties[0]?.id || '');
-  const [receiptDate, setReceiptDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [receiptDate, setReceiptDate] = useState<string>(todayPKT());
   const [amount, setAmount] = useState<number>(0); // blank — user types the actual received amount
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('cash');
-  const [bankName, setBankName] = useState<string>('Meezan Bank');
+  const [bankName, setBankName] = useState<string>('');
   const [refNo, setRefNo] = useState<string>('');
-  const [collectedBy, setCollectedBy] = useState<string>('منشی راشد (Munshi)');
+  const [collectedBy, setCollectedBy] = useState<string>('');
   const [notes, setNotes] = useState<string>('نقد وصولی برائے کھاتہ');
+
+  // Re-apply the preselected party every time the modal opens (or the
+  // preselection changes) — the initial useState only ran on first mount.
+  useEffect(() => {
+    if (isOpen && preselectedPartyId) setPartyId(preselectedPartyId);
+  }, [isOpen, preselectedPartyId]);
+
+  if (!isOpen) return null;
 
   const selectedParty = parties.find((p) => p.id === partyId) || parties[0];
   const curBal = selectedParty?.currentBalance || 0;
@@ -110,7 +117,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
             >
               {parties.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.urduName ? `${p.urduName} (${p.name})` : p.name} — Bal: {formatPKR(p.currentBalance, true)}
+                  {p.urduName ? `${p.urduName} (${p.name})` : p.name}{p.partyType === 'supplier' ? (isUrdu ? ' — سپلائر' : ' — Supplier') : ''} — Bal: {formatPKR(p.currentBalance, true)}
                 </option>
               ))}
             </select>
@@ -211,6 +218,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 onChange={(e) => setCollectedBy(e.target.value)}
                 className="w-full px-3 py-1.5 rounded-xl border border-slate-300 font-bold bg-white text-xs"
               >
+                <option value="">{isUrdu ? '— منتخب کریں —' : '— Select —'}</option>
                 <option value="منشی راشد (Munshi)">منشی راشد (Munshi)</option>
                 <option value="محمد طارق (Driver)">محمد طارق (Driver)</option>
                 <option value="نوید اختر (Driver)">نوید اختر (Driver)</option>

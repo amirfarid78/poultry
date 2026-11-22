@@ -18,8 +18,12 @@ import {
   DayClosing, 
   LedgerEntry,
   ExpenseItem,
-  GeneralJournalEntry 
+  GeneralJournalEntry,
+  AccountItem,
+  ExpenseCategory,
+  PaymentMode,
 } from './types';
+import { todayPKT, formatPKR } from './utils/calculations';
 
 // Layout & View Components
 import { Navbar } from './components/layout/Navbar';
@@ -51,7 +55,7 @@ import { fetchPublicInvoice } from './lib/publicInvoice';
 
 // Supabase data + offline sync
 import { supabase } from './lib/supabase';
-import { fetchAll, fetchStaffProfiles } from './lib/db';
+import { fetchAll, fetchStaffProfiles, fetchProducts } from './lib/db';
 import type { StaffProfile } from './types';
 import { peekOutbox } from './lib/offline';
 import { startSyncEngine, noteSyncProblem } from './lib/sync';
@@ -64,6 +68,168 @@ import {
   snapshotState,
 } from './lib/remote';
 import type { EmployeeAdvance } from './lib/db';
+
+// ---------------------------------------------------------------------------
+// P0-4: account effects engine (SQA fix 2026-11-22).
+// Cash & bank were local-only: no handler ever touched `accounts`, so a fresh
+// device showed Rs 0. Every money movement now posts category-aware effects
+// (asset/expense: debit +, credit −; liability/equity/revenue: debit −,
+// credit +) and the touched accounts are persisted via the outbox, so the
+// server chart_of_accounts carries the true balances.
+// ---------------------------------------------------------------------------
+
+/** Cash/bank/wallet account for a payment mode. 'adjustment' moves no cash. */
+const CASH_ACCOUNT_FOR_MODE: Record<PaymentMode, string | null> = {
+  cash: '1010',
+  bank_transfer: '1020',
+  cheque: '1020',
+  jazzcash: '1030',
+  easypaisa: '1040',
+  adjustment: null,
+};
+
+/** Expense category -> COA expense account (5040/5050/5060 are in the seeded structure below). */
+const EXPENSE_ACCOUNT: Record<ExpenseCategory, string> = {
+  fuel: '5020',
+  labor: '5030',
+  shed_rent: '5050',
+  electricity: '5050',
+  feed_misc: '5060',
+  food_chai: '5060',
+  repairs: '5060',
+  other: '5060',
+};
+
+interface AccountEffect {
+  code: string;
+  debit: number;
+  credit: number;
+}
+
+/** Apply effects to an accounts array; returns the new array + touched rows (for persisting). Unknown codes are skipped (COA seeding covers the known codes). */
+function applyAccountEffectsTo(
+  accounts: AccountItem[],
+  effects: AccountEffect[]
+): { accounts: AccountItem[]; touched: AccountItem[] } {
+  let next = accounts;
+  const touchedCodes = new Set<string>();
+  for (const e of effects) {
+    const acct = next.find((a) => a.code === e.code);
+    if (!acct) continue;
+    const dir =
+      acct.category === 'liability' || acct.category === 'equity' || acct.category === 'revenue'
+        ? -1
+        : 1;
+    const delta = dir * (e.debit - e.credit);
+    if (delta === 0) continue;
+    touchedCodes.add(e.code);
+    next = next.map((a) => (a.code === e.code ? { ...a, balance: a.balance + delta } : a));
+  }
+  return { accounts: next, touched: next.filter((a) => touchedCodes.has(a.code)) };
+}
+
+/** Swap debit/credit on every effect (void / reversal of the original). */
+const reverseAccountEffects = (effects: AccountEffect[]): AccountEffect[] =>
+  effects.map((e) => ({ code: e.code, debit: e.credit, credit: e.debit }));
+
+/** Sale: Dr 1050 Receivables / Cr 4010 Revenue; cash received at sale: Dr cash/bank, Cr 1050. */
+const invoiceAccountEffects = (inv: Invoice): AccountEffect[] => {
+  const effects: AccountEffect[] = [
+    { code: '1050', debit: inv.totalAmount, credit: 0 },
+    { code: '4010', debit: 0, credit: inv.totalAmount },
+  ];
+  if (inv.receivedCash > 0) {
+    effects.push(
+      { code: '1010', debit: inv.receivedCash, credit: 0 },
+      { code: '1050', debit: 0, credit: inv.receivedCash }
+    );
+  }
+  if (inv.receivedAC > 0) {
+    effects.push(
+      { code: '1020', debit: inv.receivedAC, credit: 0 },
+      { code: '1050', debit: 0, credit: inv.receivedAC }
+    );
+  }
+  return effects;
+};
+
+/** Receipt: customer pays -> Dr cash/bank, Cr 1050. Supplier paid -> Dr 2010 (payable down), Cr cash/bank. */
+const receiptAccountEffects = (receipt: ReceiptVoucher): AccountEffect[] => {
+  const cashCode = CASH_ACCOUNT_FOR_MODE[receipt.paymentMode];
+  const effects: AccountEffect[] = [];
+  if (receipt.partyType === 'customer') {
+    if (cashCode) effects.push({ code: cashCode, debit: receipt.amount, credit: 0 });
+    effects.push({ code: '1050', debit: 0, credit: receipt.amount });
+  } else {
+    effects.push({ code: '2010', debit: receipt.amount, credit: 0 });
+    if (cashCode) effects.push({ code: cashCode, debit: 0, credit: receipt.amount });
+  }
+  return effects;
+};
+
+/** Purchase: Dr 5010 COGS / Cr 2010 Payables; amount paid at purchase: Dr 2010, Cr cash/bank. */
+const purchaseAccountEffects = (purchase: Purchase): AccountEffect[] => {
+  const effects: AccountEffect[] = [
+    { code: '5010', debit: purchase.totalAmount, credit: 0 },
+    { code: '2010', debit: 0, credit: purchase.totalAmount },
+  ];
+  const paid = (purchase.paidCash || 0) + (purchase.paidBank || 0);
+  if (paid > 0) {
+    effects.push({ code: '2010', debit: paid, credit: 0 });
+    if (purchase.paidCash > 0) effects.push({ code: '1010', debit: 0, credit: purchase.paidCash });
+    if (purchase.paidBank > 0) effects.push({ code: '1020', debit: 0, credit: purchase.paidBank });
+  }
+  return effects;
+};
+
+/** Expense: Dr expense account by category / Cr cash/bank (no cash leg for 'adjustment'). */
+const expenseAccountEffects = (expense: ExpenseItem): AccountEffect[] => {
+  const cashCode = CASH_ACCOUNT_FOR_MODE[expense.paymentMode];
+  const effects: AccountEffect[] = [
+    { code: EXPENSE_ACCOUNT[expense.category], debit: expense.amount, credit: 0 },
+  ];
+  if (cashCode) effects.push({ code: cashCode, debit: 0, credit: expense.amount });
+  return effects;
+};
+
+/** Chart of accounts structure seeded (0 balances) when the server COA is empty (P0-4). */
+function coaStructure(): AccountItem[] {
+  const a = (
+    code: string,
+    name: string,
+    urduName: string,
+    category: AccountItem['category']
+  ): AccountItem => ({ code, name, urduName, category, balance: 0 });
+  return [
+    a('1010', 'Cash in Hand (Galla)', 'نقد کیش گلہ', 'asset'),
+    a('1020', 'Meezan Bank Current A/C', 'میزان بینک اکاؤنٹ', 'asset'),
+    a('1030', 'JazzCash Merchant Wallet', 'جاز کیش مرچنٹ', 'asset'),
+    a('1040', 'Easypaisa Business Wallet', 'ایزی پیسہ بزنس', 'asset'),
+    a('1050', 'Customer Receivables (Udhaar)', 'گاہکوں سے بقایا جات', 'asset'),
+    a('1060', 'Live Birds Farm Inventory', 'زندہ مرغ اسٹاک', 'asset'),
+    a('2010', 'Supplier Payables', 'سپلائرز کے واجبات', 'liability'),
+    a('3010', 'Owner Capital', 'مالک کا سرمایہ', 'equity'),
+    a('4010', 'Chicken Sales Revenue', 'مرغ فروخت آمدن', 'revenue'),
+    a('5010', 'Cost of Birds Purchased (COGS)', 'خریداری لاگت', 'expense'),
+    a('5020', 'Vehicle Diesel & Maintenance', 'گاڑی ڈیزل و مرمت', 'expense'),
+    a('5030', 'Staff Salaries & Expenses', 'تنخواہیں و اسٹاف خرچ', 'expense'),
+    a('5040', 'Mortality & Weight Loss', 'اموات و وزن کمی', 'expense'),
+    a('5050', 'Shed Rent & Utilities', 'شیڈ کرایہ و یوٹیلیٹیز', 'expense'),
+    a('5060', 'Other Operating Expenses', 'دیگر کاروباری اخراجات', 'expense'),
+  ];
+}
+
+/** A fresh BR-LIVE broiler row (used when local inventory has none — P0-5 / P1-7). */
+const freshBroilerRow = (weightKg: number, count: number): InventoryItem => ({
+  id: 'inv-item-1',
+  code: 'BR-LIVE',
+  name: 'Live Broiler Chicken',
+  urduName: 'زندہ برائلر مرغ',
+  category: 'broiler',
+  currentWeightKg: weightKg,
+  currentCount: count,
+  unit: 'kg',
+});
 
 function AppShell() {
   const { session, profile, role, loading: authLoading, signOut } = useAuth();
@@ -141,8 +307,14 @@ function AppShell() {
   // ---- Supabase as source of truth -------------------------------------
   // A ref mirror of appState so async refreshes always merge against latest.
   const stateRef = React.useRef(appState);
+  // Ref mirror of the BR-LIVE stock row, updated synchronously by the stock
+  // persist path (P1-31): rapid purchases must build on each other's
+  // persisted value, not on the same stale pre-update base.
+  const broilerStockRef = React.useRef<InventoryItem | null>(null);
   useEffect(() => {
     stateRef.current = appState;
+    broilerStockRef.current =
+      appState.inventory.find((i) => i.code === 'BR-LIVE' || i.id === 'inv-item-1') ?? null;
   }, [appState]);
 
   /** Pull every collection from Supabase and reconcile (server wins). */
@@ -164,9 +336,21 @@ function AppShell() {
       // freshest known state, so it must keep winning over stale server rows.
       const pending = await peekOutbox(true).catch(() => []);
       const next = reconcileState(stateRef.current, remote, pending);
-      stateRef.current = next;
-      setAppState(next);
-      void snapshotState(next).catch(() => {});
+      // P0-4: the server COA was empty (Chart tab showed a header only, and
+      // every JV failed to sync with "account code(s) not found"). Seed the
+      // structure (0 balances) once so the accounts exist everywhere; the
+      // owner then sets opening balances in Accounting -> Chart of Accounts.
+      // Only when the accounts fetch itself succeeded — an RLS/network
+      // hiccup must not seed over unknown server state.
+      let settled = next;
+      if (next.accounts.length === 0 && !failed.includes('accounts')) {
+        const seeded = coaStructure();
+        settled = { ...next, accounts: seeded };
+        for (const a of seeded) void persist('upsert', 'chart_of_accounts', a);
+      }
+      stateRef.current = settled;
+      setAppState(settled);
+      void snapshotState(settled).catch(() => {});
     } catch (e) {
       /* keep local state; will retry on next sync tick — but say so: a
          refresh that fails silently is how stale/demo data stays on screen */
@@ -216,10 +400,10 @@ function AppShell() {
   };
 
   const setTodayMandiRate = (rate: number) => {
-    setAppState((prev) => ({ ...prev, todayMandiRate: rate }));
+    setAppState((prev) => ({ ...prev, todayMandiRate: rate, mandiRateDate: todayPKT() }));
     void persist('insert', 'mandi_rates', {
       id: crypto.randomUUID(),
-      marketDate: new Date().toISOString().split('T')[0],
+      marketDate: todayPKT(),
       city: 'Lahore',
       broilerRatePer40kg: rate,
     });
@@ -228,6 +412,25 @@ function AppShell() {
   // 0. PARTY CRUD OPERATIONS (Customers & Suppliers)
   const handleAddParty = (party: Party) => {
     party = withUuid(party); // server PKs are UUIDs
+    // P2-16: no silent duplicate parties. Same normalized name AND same
+    // non-empty phone -> block; name-only match -> confirm first.
+    const normName = party.name.trim().toLowerCase();
+    const normPhone = (party.phone || '').trim();
+    const sameNameAndPhone = stateRef.current.parties.some(
+      (p) => p.name.trim().toLowerCase() === normName && (p.phone || '').trim() !== '' && (p.phone || '').trim() === normPhone
+    );
+    if (normPhone !== '' && sameNameAndPhone) {
+      window.alert(
+        `A party named "${party.name}" with phone ${party.phone} already exists — not added again.`
+      );
+      return;
+    }
+    const sameName = stateRef.current.parties.some(
+      (p) => p.name.trim().toLowerCase() === normName
+    );
+    if (sameName && !window.confirm(`A party named "${party.name}" already exists. Add another one anyway?`)) {
+      return;
+    }
     setAppState((prev) => {
       let updatedEntries = prev.ledgerEntries;
       if (party.openingBalance !== 0) {
@@ -235,7 +438,7 @@ function AppShell() {
           id: `led-open-${Date.now()}`,
           partyId: party.id,
           partyType: party.partyType,
-          entryDate: party.createdAt ? party.createdAt.split('T')[0] : new Date().toISOString().split('T')[0],
+          entryDate: party.createdAt ? party.createdAt.split('T')[0] : todayPKT(),
           detail: `Opening Balance (${party.openingBalance > 0 ? 'Receivable' : 'Advance with Us'})`,
           detailUrdu: `ابتدائی سابقہ بیلنس (${party.openingBalance > 0 ? 'واجب الوصول بقایا' : 'پیشگی جمع رقم'})`,
           folioNo: 'OP-01',
@@ -684,23 +887,38 @@ function AppShell() {
     };
   };
 
-  const persistInvoiceStock = (invoice: Invoice, sign: 1 | -1) => {
-    const broiler = stateRef.current.inventory.find(
-      (i) => i.category === 'broiler' && (i.id === 'inv-item-1' || i.code === 'BR-LIVE')
-    );
-    if (broiler) {
-      void persist('upsert', 'products', {
-        ...broiler,
-        currentWeightKg: Math.max(
-          0,
-          broiler.currentWeightKg + sign * invoice.netWeightKg
-        ),
-        currentCount: Math.max(
-          0,
-          (broiler.currentCount || 0) +
-            sign * (invoice.birdCount || Math.round(invoice.netWeightKg / 2))
-        ),
-      });
+  // P0-5: persist the BR-LIVE stock movement server-side even when local
+  // inventory is empty (fresh/blank device). Base on the synchronously
+  // maintained broiler ref (P1-31: rapid saves build on each other, not on
+  // the same stale pre-update base); fall back to fetching the server row
+  // by code and upserting from server values, or insert a 0-row if missing.
+  const persistStockDelta = async (weightDelta: number, countDelta: number) => {
+    const base = broilerStockRef.current;
+    if (base) {
+      const nextRow: InventoryItem = {
+        ...base,
+        currentWeightKg: Math.max(0, base.currentWeightKg + weightDelta),
+        currentCount: Math.max(0, (base.currentCount || 0) + countDelta),
+      };
+      broilerStockRef.current = nextRow;
+      void persist('upsert', 'products', nextRow);
+      return;
+    }
+    try {
+      const serverItems = await fetchProducts(supabase);
+      const server = serverItems.find((i) => i.code === 'BR-LIVE');
+      const row: InventoryItem = server ?? freshBroilerRow(0, 0);
+      const nextRow: InventoryItem = {
+        ...row,
+        currentWeightKg: Math.max(0, row.currentWeightKg + weightDelta),
+        currentCount: Math.max(0, (row.currentCount || 0) + countDelta),
+      };
+      broilerStockRef.current = nextRow;
+      void persist('upsert', 'products', nextRow);
+    } catch {
+      // Offline or products fetch failed: the sale/purchase is saved locally
+      // and the server row is created on the next successful stock persist.
+      // Never block the sale on this.
     }
   };
 
@@ -710,13 +928,19 @@ function AppShell() {
   // back on the next refresh — see reconcileState).
   const handleSaveInvoice = (invoice: Invoice, linkedOrderId?: string) => {
     invoice = withUuid(invoice);
-    setAppState((prev) => applyInvoiceToState(prev, invoice, linkedOrderId));
+    const effects = invoiceAccountEffects(invoice);
+    const { accounts, touched } = applyAccountEffectsTo(stateRef.current.accounts, effects);
+    setAppState((prev) => ({ ...applyInvoiceToState(prev, invoice, linkedOrderId), accounts }));
     void persist('insert', 'invoices', invoice);
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
     if (linkedOrderId && isUuid(linkedOrderId)) {
       void persist('update', 'orders', { id: linkedOrderId, status: 'invoiced' });
     }
     // Broiler stock movement -> products (upsert by code)
-    persistInvoiceStock(invoice, -1);
+    void persistStockDelta(
+      -invoice.netWeightKg,
+      -(invoice.birdCount || Math.round(invoice.netWeightKg / 2))
+    );
     setOrderToInvoice(null);
   };
 
@@ -728,12 +952,20 @@ function AppShell() {
     const invoice = s.invoices.find((i) => i.id === invoiceId);
     if (!invoice || invoice.isVoid) return;
     const voidReason = reason || (s.language === 'ur' ? 'صارف نے حذف کیا' : 'Deleted by user');
-    setAppState((prev) => reverseInvoiceForVoid(prev, invoice, voidReason));
+    const { accounts, touched } = applyAccountEffectsTo(
+      s.accounts,
+      reverseAccountEffects(invoiceAccountEffects(invoice))
+    );
+    setAppState((prev) => ({ ...reverseInvoiceForVoid(prev, invoice, voidReason), accounts }));
     // Void FIRST so the outbox replays it before anything that follows.
     // partyId lets the reconciler keep the local party balance until the
     // void RPC lands on the server.
     void persist('insert', 'invoice_voids', { id: invoiceId, invoiceId, reason: voidReason, partyId: invoice.customerId });
-    persistInvoiceStock(invoice, 1);
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
+    void persistStockDelta(
+      invoice.netWeightKg,
+      invoice.birdCount || Math.round(invoice.netWeightKg / 2)
+    );
   };
 
   // 1c. EDIT A SALE = void the old invoice + issue the corrected one.
@@ -746,31 +978,32 @@ function AppShell() {
         ? `ترمیم — نیا بل ${updatedInvoice.invoiceNumber}`
         : `Edited — reissued as ${updatedInvoice.invoiceNumber}`;
     const fresh = withUuid(updatedInvoice);
-    setAppState((prev) => applyInvoiceToState(reverseInvoiceForVoid(prev, current, voidReason), fresh));
+    const effects = [
+      ...reverseAccountEffects(invoiceAccountEffects(current)),
+      ...invoiceAccountEffects(fresh),
+    ];
+    const { accounts, touched } = applyAccountEffectsTo(s.accounts, effects);
+    setAppState((prev) => ({ ...applyInvoiceToState(reverseInvoiceForVoid(prev, current, voidReason), fresh), accounts }));
     void persist('insert', 'invoice_voids', { id: current.id, invoiceId: current.id, reason: voidReason, partyId: current.customerId });
     // voidsInvoiceId chains the pair in the sync engine: the reissue waits
     // until the void has replayed, so a failed void can never double-count.
     void persist('insert', 'invoices', { ...fresh, voidsInvoiceId: current.id });
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
     // Single stock upsert: restore the old sale's stock, deduct the new one.
-    const broiler = s.inventory.find(
-      (i) => i.category === 'broiler' && (i.id === 'inv-item-1' || i.code === 'BR-LIVE')
+    void persistStockDelta(
+      current.netWeightKg - fresh.netWeightKg,
+      (current.birdCount || Math.round(current.netWeightKg / 2)) -
+        (fresh.birdCount || Math.round(fresh.netWeightKg / 2))
     );
-    if (broiler) {
-      const wDelta = current.netWeightKg - fresh.netWeightKg;
-      const cDelta =
-        (current.birdCount || Math.round(current.netWeightKg / 2)) -
-        (fresh.birdCount || Math.round(fresh.netWeightKg / 2));
-      void persist('upsert', 'products', {
-        ...broiler,
-        currentWeightKg: Math.max(0, broiler.currentWeightKg + wDelta),
-        currentCount: Math.max(0, (broiler.currentCount || 0) + cDelta),
-      });
-    }
   };
 
   // 2. SAVE PAYMENT-ONLY RECEIPT VOUCHER
   const handleSaveReceipt = (receipt: ReceiptVoucher) => {
     receipt = withUuid(receipt);
+    const { accounts, touched } = applyAccountEffectsTo(
+      stateRef.current.accounts,
+      receiptAccountEffects(receipt)
+    );
     setAppState((prev) => {
       const updatedParties = prev.parties.map((p) => {
         if (p.id === receipt.partyId) {
@@ -814,10 +1047,12 @@ function AppShell() {
         parties: updatedParties,
         receipts: [...prev.receipts, receipt],
         ledgerEntries: [...prev.ledgerEntries, newLedgerEntry],
-        dayClosing: updatedDayClosing
+        dayClosing: updatedDayClosing,
+        accounts,
       };
     });
     void persist('insert', 'receipts', receipt);
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
   };
 
   // 2b. DELETE (VOID) A PAYMENT VOUCHER — mirrors void_receipt(): marks the
@@ -829,6 +1064,10 @@ function AppShell() {
     if (!receipt || receipt.isVoid) return;
     const voidReason = reason || (s.language === 'ur' ? 'صارف نے حذف کیا' : 'Deleted by user');
     const now = new Date().toISOString();
+    const { accounts, touched } = applyAccountEffectsTo(
+      s.accounts,
+      reverseAccountEffects(receiptAccountEffects(receipt))
+    );
     setAppState((prev) => {
       const party = prev.parties.find((p) => p.id === receipt.partyId);
       const curBal = party?.currentBalance ?? receipt.newBalance;
@@ -838,12 +1077,16 @@ function AppShell() {
         id: `led-void-rec-${Date.now()}`,
         partyId: receipt.partyId,
         partyType: receipt.partyType,
-        entryDate: now.split('T')[0],
+        entryDate: todayPKT(),
         detail: `VOID reversal (${voidReason}): payment ${receipt.receiptNumber}`,
         detailUrdu: `وائڈ واپسی (${voidReason}): ادائیگی ${receipt.receiptNumber}`,
         folioNo: receipt.receiptNumber,
-        debit: receipt.partyType === 'customer' ? receipt.amount : 0,
-        credit: receipt.partyType === 'supplier' ? receipt.amount : 0,
+        // W9: the original receipt posts credit=amount for BOTH party types
+        // (customer: receivable down; supplier: payable down), so the
+        // reversal is always debit=amount. The old code posted credit for
+        // suppliers, which moved the balance the wrong way.
+        debit: receipt.amount,
+        credit: 0,
         runningBalance: newBal,
         refType: 'receipt',
         refId: receipt.id,
@@ -874,9 +1117,11 @@ function AppShell() {
         ),
         ledgerEntries: [...prev.ledgerEntries, reversal],
         dayClosing: updatedDayClosing,
+        accounts,
       };
     });
     void persist('insert', 'receipt_voids', { id: receiptId, receiptId, reason: voidReason, partyId: receipt.partyId });
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
   };
 
   // 2c. EDIT A LEDGER ROW (customer + supplier khata) — date/narration are
@@ -942,6 +1187,10 @@ function AppShell() {
   // 3. SAVE SUPPLIER PURCHASE & UPDATE INVENTORY & CASH
   const handleAddPurchase = (purchase: Purchase) => {
     purchase = withUuid(purchase);
+    const { accounts, touched } = applyAccountEffectsTo(
+      stateRef.current.accounts,
+      purchaseAccountEffects(purchase)
+    );
     setAppState((prev) => {
       const updatedParties = prev.parties.map((p) => {
         if (p.id === purchase.supplierId) {
@@ -972,8 +1221,9 @@ function AppShell() {
         createdAt: new Date().toISOString()
       };
 
-      // Increase Live Broiler stock
-      const updatedInventory = prev.inventory.map((inv) => {
+      // Increase Live Broiler stock. P0-5: if no local broiler row exists
+      // (fresh device), create it from this purchase instead of no-op'ing.
+      let updatedInventory = prev.inventory.map((inv) => {
         if (inv.category === 'broiler' && (inv.id === 'inv-item-1' || inv.code === 'BR-LIVE')) {
           return {
             ...inv,
@@ -983,6 +1233,15 @@ function AppShell() {
         }
         return inv;
       });
+      if (!updatedInventory.some((inv) => inv.category === 'broiler' && (inv.id === 'inv-item-1' || inv.code === 'BR-LIVE'))) {
+        updatedInventory = [
+          ...updatedInventory,
+          freshBroilerRow(
+            purchase.netWeightKg,
+            purchase.birdCount || Math.round(purchase.netWeightKg / 2)
+          ),
+        ];
+      }
 
       // Deduct paid cash from safe
       const updatedDayClosing: DayClosing = {
@@ -997,27 +1256,28 @@ function AppShell() {
         purchases: [...prev.purchases, purchase],
         ledgerEntries: [...prev.ledgerEntries, purchaseLedgerEntry],
         inventory: updatedInventory,
-        dayClosing: updatedDayClosing
+        dayClosing: updatedDayClosing,
+        accounts,
       };
     });
     void persist('insert', 'purchases', purchase);
-    const broilerAfterPurchase = stateRef.current.inventory.find(
-      (i) => i.category === 'broiler' && (i.id === 'inv-item-1' || i.code === 'BR-LIVE')
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
+    // P1-31: the stock persist builds on the synchronously maintained
+    // broiler ref (persistStockDelta), so two rapid purchases no longer
+    // read the same stale pre-update base and overwrite each other.
+    void persistStockDelta(
+      purchase.netWeightKg,
+      purchase.birdCount || Math.round(purchase.netWeightKg / 2)
     );
-    if (broilerAfterPurchase) {
-      void persist('upsert', 'products', {
-        ...broilerAfterPurchase,
-        currentWeightKg: broilerAfterPurchase.currentWeightKg + purchase.netWeightKg,
-        currentCount:
-          (broilerAfterPurchase.currentCount || 0) +
-          (purchase.birdCount || Math.round(purchase.netWeightKg / 2)),
-      });
-    }
   };
 
   // 3.5. EXPENSES HANDLERS
   const handleAddExpense = (expense: ExpenseItem) => {
     expense = withUuid(expense);
+    const { accounts, touched } = applyAccountEffectsTo(
+      stateRef.current.accounts,
+      expenseAccountEffects(expense)
+    );
     setAppState((prev) => {
       // If paid via cash, deduct from Roznamcha daily cash
       const isCash = expense.paymentMode === 'cash';
@@ -1030,13 +1290,22 @@ function AppShell() {
       return {
         ...prev,
         expenses: [expense, ...prev.expenses],
-        dayClosing: updatedDayClosing
+        dayClosing: updatedDayClosing,
+        accounts,
       };
     });
     void persist('insert', 'expenses', expense);
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
   };
 
   const handleDeleteExpense = (expenseId: string) => {
+    const target0 = stateRef.current.expenses.find((e) => e.id === expenseId);
+    const { accounts, touched } = target0
+      ? applyAccountEffectsTo(
+          stateRef.current.accounts,
+          reverseAccountEffects(expenseAccountEffects(target0))
+        )
+      : { accounts: stateRef.current.accounts, touched: [] as AccountItem[] };
     setAppState((prev) => {
       const target = prev.expenses.find((e) => e.id === expenseId);
       if (!target) return prev;
@@ -1051,10 +1320,12 @@ function AppShell() {
       return {
         ...prev,
         expenses: prev.expenses.filter((e) => e.id !== expenseId),
-        dayClosing: updatedDayClosing
+        dayClosing: updatedDayClosing,
+        accounts,
       };
     });
     if (isUuid(expenseId)) void persist('delete', 'expenses', { id: expenseId });
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
   };
 
   // 4. ORDER HANDLERS
@@ -1100,22 +1371,11 @@ function AppShell() {
   const handleIssueEmployeeAdvance = (empId: string, amount: number, notes?: string) => {
     const s = stateRef.current;
     const targetEmp = s.employees.find((e) => e.id === empId);
-    const todayStr = new Date().toISOString().split('T')[0];
-    const newExpense: ExpenseItem = withUuid({
-      id: '',
-      expenseNumber: nextDocNumber('EXP', s.expenses.map((e) => e.expenseNumber), 100),
-      date: todayStr,
-      category: 'labor',
-      categoryName: 'Staff Advance & Payroll',
-      categoryUrduName: 'اسٹاف پیشگی لون و تنخواہ',
-      amount,
-      paymentMode: 'cash',
-      description: `Advance given to ${targetEmp?.name || 'Staff'}: ${notes || '-'}`,
-      descriptionUrdu: `${targetEmp?.urduName || targetEmp?.name || 'اسٹاف'} کو پیشگی ادائی: ${notes || '-'}`,
-      paidTo: targetEmp?.name || 'Staff',
-      createdBy: 'Cashier / منشی',
-      createdAt: new Date().toISOString()
-    });
+    const todayStr = todayPKT();
+    // P1-23: an advance is a receivable (advanceBalance), NOT an expense.
+    // The old code also created a labor expense for the same amount, so the
+    // advance was expensed AND tracked as recoverable (double-counted in
+    // P&L), and HRView pre-incremented the balance on top of this handler.
     const advance: EmployeeAdvance = {
       id: crypto.randomUUID(),
       employeeId: empId,
@@ -1144,12 +1404,10 @@ function AppShell() {
       return {
         ...prev,
         employees: updatedEmployees,
-        expenses: [newExpense, ...prev.expenses],
         dayClosing: updatedDayClosing
       };
     });
 
-    void persist('insert', 'expenses', newExpense);
     if (isUuid(empId)) {
       void persist('insert', 'employee_advances', advance);
       void persist('update', 'employees', { id: empId, advanceBalance: newAdvanceBalance });
@@ -1233,6 +1491,13 @@ function AppShell() {
   // 8.5. GENERAL JOURNAL ENTRY (ROZNAMCHA) HANDLERS
   const handleAddGeneralEntry = (entry: GeneralJournalEntry) => {
     entry = withUuid(entry);
+    // P1-16: the receivables account is 1050, NOT 1020 (1020 is Meezan
+    // Bank). The old code linked a party's balance to the bank account, so
+    // a default JV with a party linked silently reduced that party's balance.
+    const { accounts, touched } = applyAccountEffectsTo(stateRef.current.accounts, [
+      { code: entry.debitAccountCode, debit: entry.amount, credit: 0 },
+      { code: entry.creditAccountCode, debit: 0, credit: entry.amount },
+    ]);
     setAppState((prev) => {
       const updatedGeneral = [entry, ...(prev.generalEntries || [])];
 
@@ -1242,8 +1507,8 @@ function AppShell() {
       if (entry.partyId) {
         const party = prev.parties.find(p => p.id === entry.partyId);
         if (party) {
-          const isCustomerCredit = entry.creditAccountCode === '1020';
-          const isCustomerDebit = entry.debitAccountCode === '1020';
+          const isCustomerCredit = entry.creditAccountCode === '1050';
+          const isCustomerDebit = entry.debitAccountCode === '1050';
           const balDelta = isCustomerCredit ? -entry.amount : isCustomerDebit ? entry.amount : 0;
           const newBal = party.currentBalance + balDelta;
 
@@ -1268,15 +1533,7 @@ function AppShell() {
         }
       }
 
-      const updatedAccounts = prev.accounts.map(acc => {
-        if (acc.code === entry.debitAccountCode) {
-          return { ...acc, balance: acc.balance + entry.amount };
-        }
-        if (acc.code === entry.creditAccountCode) {
-          return { ...acc, balance: Math.max(0, acc.balance - entry.amount) };
-        }
-        return acc;
-      });
+      const updatedAccounts = accounts;
 
       let updatedDayClosing = prev.dayClosing;
       if (entry.debitAccountCode === '1010') {
@@ -1303,19 +1560,98 @@ function AppShell() {
       };
     });
     // The journal entry itself syncs (engine resolves account codes -> ids).
-    // Derived account/party/ledger adjustments stay local-only in v1.
+    // P0-4: the touched account balances now sync too (they were local-only).
     void persist('insert', 'journal_entries', { entry });
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
   };
 
   const handleDeleteGeneralEntry = (entryId: string) => {
-    setAppState((prev) => ({
-      ...prev,
-      generalEntries: (prev.generalEntries || []).filter(g => g.id !== entryId)
-    }));
+    const target = stateRef.current.generalEntries?.find((g) => g.id === entryId);
+    if (!target) return;
+    // Deleting a JV must reverse its effects (the old code only removed the
+    // entry row, leaving the party balance, khata row and account balances
+    // wrong). Mirror handleAddGeneralEntry with debit/credit swapped.
+    const { accounts, touched } = applyAccountEffectsTo(stateRef.current.accounts, [
+      { code: target.debitAccountCode, debit: 0, credit: target.amount },
+      { code: target.creditAccountCode, debit: target.amount, credit: 0 },
+    ]);
+    setAppState((prev) => {
+      let parties = prev.parties;
+      let ledgerEntries = prev.ledgerEntries;
+      if (target.partyId) {
+        const party = prev.parties.find((p) => p.id === target.partyId);
+        if (party) {
+          const isCustomerCredit = target.creditAccountCode === '1050';
+          const isCustomerDebit = target.debitAccountCode === '1050';
+          const balDelta = isCustomerCredit ? target.amount : isCustomerDebit ? -target.amount : 0;
+          parties = prev.parties.map((p) =>
+            p.id === target.partyId ? { ...p, currentBalance: p.currentBalance + balDelta } : p
+          );
+          ledgerEntries = prev.ledgerEntries.filter((l) => l.refId !== entryId);
+        }
+      }
+      let dayClosing = prev.dayClosing;
+      if (target.debitAccountCode === '1010') {
+        dayClosing = {
+          ...prev.dayClosing,
+          physicalCash: Math.max(0, prev.dayClosing.physicalCash - target.amount),
+          systemCash: Math.max(0, prev.dayClosing.systemCash - target.amount),
+        };
+      } else if (target.creditAccountCode === '1010') {
+        dayClosing = {
+          ...prev.dayClosing,
+          physicalCash: prev.dayClosing.physicalCash + target.amount,
+          systemCash: prev.dayClosing.systemCash + target.amount,
+        };
+      }
+      return {
+        ...prev,
+        generalEntries: (prev.generalEntries || []).filter((g) => g.id !== entryId),
+        parties,
+        ledgerEntries,
+        accounts,
+        dayClosing,
+      };
+    });
     if (isUuid(entryId)) void persist('delete', 'journal_entries', { id: entryId });
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
+  };
+
+  // P1-8: mortality posts a journal entry — Dr 5040 Mortality & Weight Loss
+  // / Cr 1060 Farm Inventory, amount = dead kg valued at the mandi rate.
+  // (5040 is the dedicated mortality account; 5020 is Diesel — the audit
+  // note's "5020" was the seed's diesel code, corrected here.) Skipped when
+  // the computed amount is 0 (no rate set yet).
+  const handleRecordMortality = (deadKg: number, reason: string) => {
+    const s = stateRef.current;
+    if (deadKg <= 0 || s.todayMandiRate <= 0) return;
+    const amount = Math.round((deadKg * s.todayMandiRate) / 40);
+    if (amount <= 0) return;
+    handleAddGeneralEntry({
+      id: crypto.randomUUID(),
+      entryNumber: nextDocNumber('JV', s.generalEntries.map((g) => g.entryNumber), 200),
+      entryDate: todayPKT(),
+      description: `Mortality: ${deadKg} kg — ${reason}`,
+      descriptionUrdu: `اموات: ${deadKg} کلو — ${reason}`,
+      debitAccountCode: '5040',
+      debitAccountName: 'Mortality & Weight Loss',
+      creditAccountCode: '1060',
+      creditAccountName: 'Live Birds Farm Inventory',
+      amount,
+      createdBy: 'System / سسٹم',
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  // P0-4(e): Chart of Accounts opening-balance editor (AccountingView).
+  const handleUpdateAccounts = (updatedAccounts: AccountItem[]) => {
+    setAppState((prev) => ({ ...prev, accounts: updatedAccounts }));
+    for (const a of updatedAccounts) void persist('upsert', 'chart_of_accounts', a);
   };
 
   // 9. SETTINGS: 1-CLICK QUICK BUSINESS SETUP
+  // Shop name/owner/city are saved to Business Settings by SettingsView
+  // (useBusiness) — this handler owns rate/cash/stock/closing only.
   const handleQuickBusinessSetup = (config: {
     shopNameUrdu: string;
     shopNameEn: string;
@@ -1325,10 +1661,32 @@ function AppShell() {
     mandiRate: number;
     startingStockKg: number;
   }) => {
+    const today = todayPKT();
+    // P1-7: match the broiler row by code BR-LIVE (not only the seed id
+    // inv-item-1, which is gone after any server refresh); create it when
+    // no local broiler row exists at all.
+    const s0 = stateRef.current;
+    const existing = s0.inventory.find(
+      (inv) => inv.category === 'broiler' && (inv.code === 'BR-LIVE' || inv.id === 'inv-item-1')
+    );
+    const freshBroiler: InventoryItem = existing
+      ? {
+          ...existing,
+          currentWeightKg: config.startingStockKg,
+          currentCount: Math.round(config.startingStockKg / 2),
+        }
+      : freshBroilerRow(config.startingStockKg, Math.round(config.startingStockKg / 2));
+    // P0-4: the opening cash lands on account 1010 (Cash in Hand) so the
+    // cash card is true on every device; seed the COA structure first when
+    // there are no accounts at all.
+    const baseAccounts = s0.accounts.length > 0 ? s0.accounts : coaStructure();
+    const accountsWithCash = baseAccounts.map((a) =>
+      a.code === '1010' ? { ...a, balance: config.openingCash } : a
+    );
     setAppState((prev) => {
       const freshClosing: DayClosing = {
-        id: `close-${new Date().toISOString().split('T')[0]}`,
-        date: new Date().toISOString().split('T')[0],
+        id: `close-${today}`,
+        date: today,
         physicalCash: config.openingCash,
         systemCash: config.openingCash,
         variance: 0,
@@ -1339,8 +1697,8 @@ function AppShell() {
         lockedBy: 'System / سسٹم'
       };
 
-      const freshInventory = prev.inventory.map((inv) => {
-        if (inv.category === 'broiler' && inv.id === 'inv-item-1') {
+      const mappedInventory = prev.inventory.map((inv) => {
+        if (inv.category === 'broiler' && (inv.code === 'BR-LIVE' || inv.id === 'inv-item-1')) {
           return {
             ...inv,
             currentWeightKg: config.startingStockKg,
@@ -1349,17 +1707,24 @@ function AppShell() {
         }
         return inv;
       });
+      const freshInventory = mappedInventory.some(
+        (inv) => inv.category === 'broiler' && (inv.code === 'BR-LIVE' || inv.id === 'inv-item-1')
+      )
+        ? mappedInventory
+        : [...mappedInventory, freshBroiler];
 
       return {
         ...prev,
         todayMandiRate: config.mandiRate,
+        mandiRateDate: today,
         dayClosing: freshClosing,
-        inventory: freshInventory
+        inventory: freshInventory,
+        accounts: accountsWithCash,
       };
     });
     void persist('upsert', 'day_closings', {
       ...stateRef.current.dayClosing,
-      date: new Date().toISOString().split('T')[0],
+      date: today,
       physicalCash: config.openingCash,
       systemCash: config.openingCash,
       variance: 0,
@@ -1368,26 +1733,11 @@ function AppShell() {
       totalCollections: 0,
       isLocked: false,
     } as DayClosing);
-    // Persist the FRESH inventory (broiler set to the starting stock), not
-    // stateRef.current.inventory: the ref still holds the pre-setup values
-    // (the setAppState updater above hasn't committed yet), so the old code
-    // synced the OLD stock and the next refresh reverted the whole setup.
-    const freshInventory = stateRef.current.inventory.map((inv) => {
-      if (inv.category === 'broiler' && inv.id === 'inv-item-1') {
-        return {
-          ...inv,
-          currentWeightKg: config.startingStockKg,
-          currentCount: Math.round(config.startingStockKg / 2),
-        };
-      }
-      return inv;
-    });
-    for (const item of freshInventory) {
-      void persist('upsert', 'products', item);
-    }
+    for (const a of accountsWithCash) void persist('upsert', 'chart_of_accounts', a);
+    void persist('upsert', 'products', freshBroiler);
     void persist('insert', 'mandi_rates', {
       id: crypto.randomUUID(),
-      marketDate: new Date().toISOString().split('T')[0],
+      marketDate: today,
       city: config.city || 'Lahore',
       broilerRatePer40kg: config.mandiRate,
     });
@@ -1505,6 +1855,7 @@ function AppShell() {
             parties={appState.parties}
             invoices={appState.invoices}
             receipts={appState.receipts}
+            ledgerEntries={appState.ledgerEntries}
             orders={appState.orders}
             vehicles={appState.vehicles}
             trips={appState.trips}
@@ -1526,6 +1877,7 @@ function AppShell() {
           <POSView
             parties={appState.parties}
             invoices={appState.invoices}
+            inventory={appState.inventory}
             vehicles={appState.vehicles}
             todayMandiRate={appState.todayMandiRate}
             currentRole={role}
@@ -1575,6 +1927,7 @@ function AppShell() {
             parties={appState.parties}
             receipts={appState.receipts}
             invoices={appState.invoices}
+            ledgerEntries={appState.ledgerEntries}
             currentRole={role}
             language={appState.language}
             onOpenReceiptModal={(partyId) => {
@@ -1586,19 +1939,93 @@ function AppShell() {
         )}
 
         {activeTab === 'receipt' && (
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm max-w-lg mx-auto">
-            <h2 className="text-lg font-bold text-slate-900 mb-2">
-              {appState.language === 'ur' ? 'صرف رقم وصولی واؤچر اندراج' : 'Record Receipt Voucher'}
-            </h2>
-            <p className="text-xs text-slate-500 mb-4">
-              {appState.language === 'ur' ? 'گاہک کے کھاتے میں نقد یا آن لائن رقم کی وصولی بغیر مال کے درج کریں' : 'Record cash or online collection directly to party khata.'}
-            </p>
-            <button
-              onClick={() => setIsReceiptModalOpen(true)}
-              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-md"
-            >
-              {appState.language === 'ur' ? 'نیا وصولی واؤچر فارم کھولیں' : 'Open Receipt Voucher Form'}
-            </button>
+          <div className="space-y-4 max-w-3xl mx-auto">
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+              <h2 className="text-lg font-bold text-slate-900 mb-2">
+                {appState.language === 'ur' ? 'صرف رقم وصولی واؤچر اندراج' : 'Record Receipt Voucher'}
+              </h2>
+              <p className="text-xs text-slate-500 mb-4">
+                {appState.language === 'ur' ? 'گاہک کے کھاتے میں نقد یا آن لائن رقم کی وصولی بغیر مال کے درج کریں' : 'Record cash or online collection directly to party khata.'}
+              </p>
+              <button
+                onClick={() => setIsReceiptModalOpen(true)}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-md"
+              >
+                {appState.language === 'ur' ? 'نیا وصولی واؤچر فارم کھولیں' : 'Open Receipt Voucher Form'}
+              </button>
+            </div>
+
+            {/* W8: the screen used to show no list/totals/history at all. */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h3 className="text-sm font-extrabold text-slate-900">
+                  {appState.language === 'ur' ? 'وصولی واؤچرز کی تاریخ' : 'Receipt Voucher History'}
+                </h3>
+                <div className="flex gap-4 text-xs">
+                  <span className="text-emerald-700 font-bold">
+                    {appState.language === 'ur' ? 'وصولی' : 'Received'}: {formatPKR(appState.receipts.filter((r) => !r.isVoid && r.partyType === 'customer').reduce((s, r) => s + r.amount, 0), true, appState.language)}
+                  </span>
+                  <span className="text-rose-700 font-bold">
+                    {appState.language === 'ur' ? 'ادائیگی' : 'Paid out'}: {formatPKR(appState.receipts.filter((r) => !r.isVoid && r.partyType === 'supplier').reduce((s, r) => s + r.amount, 0), true, appState.language)}
+                  </span>
+                  <span className="text-slate-500">
+                    {appState.receipts.filter((r) => !r.isVoid).length} {appState.language === 'ur' ? 'واؤچر' : 'vouchers'}
+                  </span>
+                </div>
+              </div>
+              {appState.receipts.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  {appState.language === 'ur' ? 'ابھی تک کوئی وصولی واؤچر نہیں۔' : 'No receipt vouchers yet.'}
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b">
+                        <th className="py-2 pr-2">{appState.language === 'ur' ? 'تاریخ' : 'Date'}</th>
+                        <th className="py-2 pr-2">{appState.language === 'ur' ? 'نمبر' : 'No.'}</th>
+                        <th className="py-2 pr-2">{appState.language === 'ur' ? 'فریق' : 'Party'}</th>
+                        <th className="py-2 pr-2">{appState.language === 'ur' ? 'قسم' : 'Type'}</th>
+                        <th className="py-2 pr-2 text-right">{appState.language === 'ur' ? 'رقم' : 'Amount'}</th>
+                        <th className="py-2 pr-2">{appState.language === 'ur' ? 'طریقہ' : 'Mode'}</th>
+                        <th className="py-2 pr-2 text-right">{appState.language === 'ur' ? 'بقیہ' : 'Balance'}</th>
+                        <th className="py-2" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...appState.receipts]
+                        .sort((a, b) => b.receiptDate.localeCompare(a.receiptDate) || b.receiptNumber.localeCompare(a.receiptNumber))
+                        .map((r) => {
+                          const party = appState.parties.find((p) => p.id === r.partyId);
+                          return (
+                            <tr key={r.id} className={`border-b last:border-0 ${r.isVoid ? 'opacity-50 line-through' : ''}`}>
+                              <td className="py-2 pr-2 whitespace-nowrap">{r.receiptDate}</td>
+                              <td className="py-2 pr-2 font-mono">{r.receiptNumber}{r.isVoid ? ' (VOID)' : ''}</td>
+                              <td className="py-2 pr-2">{party?.name || '—'}{party?.partyType === 'supplier' ? ' (Supplier)' : ''}</td>
+                              <td className="py-2 pr-2">{r.partyType === 'supplier' ? (appState.language === 'ur' ? 'سپلائر کو ادائیگی' : 'Supplier payment') : (appState.language === 'ur' ? 'گاہک سے وصولی' : 'Customer receipt')}</td>
+                              <td className={`py-2 pr-2 text-right font-bold ${r.partyType === 'supplier' ? 'text-rose-700' : 'text-emerald-700'}`}>
+                                {r.partyType === 'supplier' ? '−' : '+'}{formatPKR(r.amount, true, appState.language)}
+                              </td>
+                              <td className="py-2 pr-2">{r.paymentMode}</td>
+                              <td className="py-2 pr-2 text-right">{formatPKR(r.newBalance, true, appState.language)}</td>
+                              <td className="py-2 text-right">
+                                {!r.isVoid && (
+                                  <button
+                                    onClick={() => handleDeleteReceipt(r.id)}
+                                    className="px-2 py-1 rounded-lg border border-red-200 text-red-700 hover:bg-red-50 text-[11px] font-bold"
+                                  >
+                                    {appState.language === 'ur' ? 'وائڈ' : 'Void'}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1645,6 +2072,7 @@ function AppShell() {
             vehicles={appState.vehicles}
             trips={appState.trips}
             orders={appState.orders}
+            expenses={appState.expenses}
             staffProfiles={staffProfiles}
             currentUserId={profile?.id ?? null}
             currentRole={role}
@@ -1662,6 +2090,7 @@ function AppShell() {
             currentRole={role}
             language={appState.language}
             onUpdateInventory={handleUpdateInventory}
+            onRecordMortality={handleRecordMortality}
           />
         )}
 
@@ -1680,6 +2109,9 @@ function AppShell() {
             onUpdateDayClosing={handleUpdateDayClosing}
             onAddGeneralEntry={handleAddGeneralEntry}
             onDeleteGeneralEntry={handleDeleteGeneralEntry}
+            onUpdateAccounts={handleUpdateAccounts}
+            inventory={appState.inventory}
+            employees={appState.employees}
           />
         )}
 

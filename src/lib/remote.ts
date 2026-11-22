@@ -8,6 +8,7 @@ import type { OutboxEntry, OutboxOp } from './offline';
 import { enqueueWrite, peekOutbox, saveSnapshot, isUuid, outboxEntityId } from './offline';
 import { getSyncEngine, noteSyncProblem } from './sync';
 import type { OutboxTable } from './db';
+import { todayPKT } from '../utils/calculations';
 
 // Re-exported for existing importers (App.tsx).
 export { isUuid };
@@ -221,6 +222,24 @@ export function reconcileState(
   };
   const byId = <T extends { id: string }>(r: T) => r.id;
 
+  // P1-17: the old code took the remote dayClosing and rate unconditionally
+  // (server-wins, no date check), so a stale server closing (systemCash
+  // 840,000 / physicalCash 840,000 from a past day) overwrote the local one
+  // on every refresh — and the stale rate did the same. Accept the remote
+  // closing only when it is for today (PKT); accept the remote rate only
+  // when its market date is at least as fresh as the local one (or the
+  // local rate is 0 / a date is missing, which keeps the old behaviour).
+  const takeRemoteClosing =
+    remote.dayClosing !== undefined && remote.dayClosing.date === todayPKT();
+  const remoteRateDate = remote.mandiRateDate;
+  const localRateDate = prev.mandiRateDate;
+  const takeRemoteRate =
+    remote.todayMandiRate !== undefined &&
+    (prev.todayMandiRate === 0 ||
+      !remoteRateDate ||
+      !localRateDate ||
+      remoteRateDate >= localRateDate);
+
   const next: AppState = {
     ...prev,
     parties: merge(prev.parties, remote.parties, 'parties', byId),
@@ -235,8 +254,9 @@ export function reconcileState(
     accounts: merge(prev.accounts, remote.accounts, 'accounts', (a) => a.code),
     employees: merge(prev.employees, remote.employees, 'employees', byId),
     generalEntries: merge(prev.generalEntries, remote.generalEntries, 'generalEntries', byId),
-    dayClosing: remote.dayClosing ?? prev.dayClosing,
-    todayMandiRate: remote.todayMandiRate ?? prev.todayMandiRate,
+    dayClosing: takeRemoteClosing ? remote.dayClosing! : prev.dayClosing,
+    todayMandiRate: takeRemoteRate ? remote.todayMandiRate! : prev.todayMandiRate,
+    mandiRateDate: takeRemoteRate ? (remoteRateDate ?? localRateDate) : localRateDate,
   };
 
   if (remote.ledgerEntries) {

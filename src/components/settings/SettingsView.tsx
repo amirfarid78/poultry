@@ -7,6 +7,7 @@ import {
   downloadFullBackup,
   importBackupToOutbox,
   cleanAllDataAndResetLocal,
+  remapStateIds,
 } from '../../lib/dataManagement';
 import { 
   exportFullBackupJSON, 
@@ -175,35 +176,68 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   // Danger zone state (owner only)
   const [deleteConfirm, setDeleteConfirm] = useState('');
+  // Reset-to-demo-seed confirmation (same DELETE-typing pattern as Danger Zone)
+  const [resetConfirm, setResetConfirm] = useState('');
   const [cleaning, setCleaning] = useState(false);
 
   // Import state
   const [importing, setImporting] = useState(false);
 
-  // Quick Setup Wizard State
-  const [showQuickSetupModal, setShowQuickSetupModal] = useState(false);
-  const [wizardShopNameUrdu, setWizardShopNameUrdu] = useState('نواز پولٹری سیلز');
-  const [wizardShopNameEn, setWizardShopNameEn] = useState('Nawaz Poultry Sales');
-  const [wizardOwnerName, setWizardOwnerName] = useState('حاجی محمد اکرم');
-  const [wizardCity, setWizardCity] = useState('Lahore');
-  const [wizardCash, setWizardCash] = useState<number>(100000);
-  const [wizardRate, setWizardRate] = useState<number>(12000);
-  const [wizardStock, setWizardStock] = useState<number>(4000);
+  // Invoice live/voided breakdown (POS lists live only; this screen used to
+  // show a single total, which looked like a different count).
+  const liveInvoiceCount = appState.invoices.filter((i) => !i.isVoid).length;
+  const voidedInvoiceCount = appState.invoices.length - liveInvoiceCount;
+  const customerCount = appState.parties.filter((p) => p.partyType === 'customer').length;
+  const supplierCount = appState.parties.filter((p) => p.partyType === 'supplier').length;
 
-  const handleApplyQuickSetup = (e: React.FormEvent) => {
+  // Quick Setup Wizard State — prefilled from the CURRENT business settings
+  // when the modal opens (see openQuickSetupModal); cash/rate/stock start at 0.
+  const [showQuickSetupModal, setShowQuickSetupModal] = useState(false);
+  const [wizardShopNameUrdu, setWizardShopNameUrdu] = useState('');
+  const [wizardShopNameEn, setWizardShopNameEn] = useState('');
+  const [wizardCity, setWizardCity] = useState('Lahore');
+  const [wizardCash, setWizardCash] = useState<number>(0);
+  const [wizardRate, setWizardRate] = useState<number>(0);
+  const [wizardStock, setWizardStock] = useState<number>(0);
+
+  // Prefill the wizard from current settings (not hardcoded names/values).
+  const openQuickSetupModal = () => {
+    setWizardShopNameUrdu(biz.nameUr);
+    setWizardShopNameEn(biz.nameEn);
+    setWizardCity(biz.city || 'Lahore');
+    setWizardCash(0);
+    setWizardRate(0);
+    setWizardStock(0);
+    setShowQuickSetupModal(true);
+  };
+
+  const handleApplyQuickSetup = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Save the shop details back to the business profile (the wizard used to
+    // discard them — App only applied rate/cash/stock). BusinessSettings has
+    // no ownerName field, so none is collected or saved.
+    try {
+      await saveBiz({
+        nameUr: wizardShopNameUrdu.trim(),
+        nameEn: wizardShopNameEn.trim(),
+        city: wizardCity.trim(),
+      });
+    } catch (err: any) {
+      showNotice(isUrdu ? `کاروباری نام محفوظ نہ ہو سکا: ${err?.message || err}` : `Could not save business name: ${err?.message || err}`, true);
+      return;
+    }
     if (onQuickSetup) {
       onQuickSetup({
         shopNameUrdu: wizardShopNameUrdu,
         shopNameEn: wizardShopNameEn,
-        ownerName: wizardOwnerName,
+        ownerName: '',
         city: wizardCity,
         openingCash: wizardCash,
         mandiRate: wizardRate,
         startingStockKg: wizardStock
       });
       setShowQuickSetupModal(false);
-      setNotice(isUrdu ? 'نیا کاروبار ون کلک پر کامیابی سے سیٹ اپ ہو گیا!' : 'Fresh shop setup initialized successfully in 1 click!');
+      setNotice(isUrdu ? 'دکان کی تفصیلات، کیش، ریٹ اور اسٹاک موجودہ ڈیٹا پر سیٹ ہو گئے!' : 'Shop details, cash, rate and stock applied to the current data!');
       setTimeout(() => setNotice(null), 5000);
     }
   };
@@ -231,12 +265,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         );
         return;
       }
+      // Re-UUID every non-UUID id FIRST so local state and the outbox
+      // payloads use the same ids (raw backup ids would collide with live
+      // records on restore).
+      const { state: remappedState } = remapStateIds(res.state);
       // 1. Instant local update (existing behavior).
-      onImportState(res.state);
+      onImportState(remappedState);
       // 2. Queue every record through the outbox so it syncs to Supabase.
       setImporting(true);
       try {
-        const r = await importBackupToOutbox(res.state);
+        const r = await importBackupToOutbox(remappedState);
         const errBit = r.errors.length > 0
           ? (isUrdu ? ` خرابیاں: ${r.errors.join('; ')}` : ` Errors: ${r.errors.join('; ')}`)
           : '';
@@ -296,7 +334,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
 
         <button
-          onClick={() => setShowQuickSetupModal(true)}
+          onClick={openQuickSetupModal}
           className="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white px-4 py-2.5 rounded-xl text-xs font-black shadow-lg transition"
         >
           <Sparkles className="w-4 h-4" />
@@ -566,15 +604,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 : 'Reload verified demo records from reference images 1, 2 and 3.'}
             </p>
           </div>
+          <label className="block text-[11px] font-bold text-slate-700 mb-1">
+            {isUrdu ? 'تصدیق کے لیے DELETE لکھیں:' : 'Type DELETE to confirm:'}
+          </label>
+          <input
+            type="text"
+            value={resetConfirm}
+            onChange={(e) => setResetConfirm(e.target.value)}
+            placeholder="DELETE"
+            className="w-full px-3 py-2 rounded-xl border border-amber-300 font-mono font-bold text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+          />
           <button
             onClick={() => {
+              if (resetConfirm.trim().toUpperCase() !== 'DELETE') return;
               if (confirm(isUrdu ? 'کیا آپ تمام ڈیٹا کو ابتدائی تصدیق شدہ ڈیمو پر ری سیٹ کرنا چاہتے ہیں؟' : 'Reset all data to initial demo seed?')) {
                 onResetSeedData();
+                setResetConfirm('');
                 setNotice(isUrdu ? 'ابتدائی ڈیمو ڈیٹا بحال ہو گیا!' : 'Initial demo seed data restored!');
                 setTimeout(() => setNotice(null), 4000);
               }
             }}
-            className="w-full py-2.5 px-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition shadow-sm"
+            disabled={resetConfirm.trim().toUpperCase() !== 'DELETE'}
+            className="w-full py-2.5 px-3 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center justify-center gap-1.5 transition shadow-sm"
           >
             <RotateCcw className="w-4 h-4" />
             <span>{isUrdu ? 'ڈیمو ری سیٹ کریں' : 'Reset to Demo'}</span>
@@ -604,7 +655,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="p-3 rounded-xl border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50 transition text-left flex flex-col justify-between h-24"
           >
             <span className="font-bold text-slate-800">{isUrdu ? 'فروخت بل انوائسز' : 'Sales Invoices'}</span>
-            <span className="text-[10px] text-slate-500">{appState.invoices.length} {isUrdu ? 'انوائسز' : 'records'}</span>
+            <span className="text-[10px] text-slate-500">{liveInvoiceCount} {isUrdu ? 'زندہ' : 'live'} · {voidedInvoiceCount} {isUrdu ? 'وائڈ' : 'voided'} ({appState.invoices.length} {isUrdu ? 'کل' : 'total'})</span>
             <span className="text-emerald-700 font-bold flex items-center gap-1 text-[11px]">
               <Download className="w-3 h-3" />
               <span>{isUrdu ? 'ڈاؤنلوڈ CSV' : 'Export CSV'}</span>
@@ -615,8 +666,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             onClick={() => exportCustomersToCSV(appState)}
             className="p-3 rounded-xl border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50 transition text-left flex flex-col justify-between h-24"
           >
-            <span className="font-bold text-slate-800">{isUrdu ? 'کسٹمر کھاتہ و بقایا' : 'Customer Khatas'}</span>
-            <span className="text-[10px] text-slate-500">{appState.parties.length} {isUrdu ? 'کھاتے' : 'parties'}</span>
+            <span className="font-bold text-slate-800">{isUrdu ? 'پارٹیاں (گاہک + سپلائر)' : 'Parties (customers + suppliers)'}</span>
+            <span className="text-[10px] text-slate-500">{customerCount} {isUrdu ? 'گاہک' : 'customers'} · {supplierCount} {isUrdu ? 'سپلائر' : 'suppliers'} ({appState.parties.length} {isUrdu ? 'کل' : 'total'})</span>
             <span className="text-emerald-700 font-bold flex items-center gap-1 text-[11px]">
               <Download className="w-3 h-3" />
               <span>{isUrdu ? 'ڈاؤنلوڈ CSV' : 'Export CSV'}</span>
@@ -752,8 +803,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </h3>
             <p className="text-[11px] text-slate-500">
               {isUrdu 
-                ? 'یہ سافٹ ویئر بغیر انٹرنیٹ، بغیر کسی سرور اور بغیر کسی فیس کے 100% لائف ٹائم چلتا ہے' 
-                : 'Zero installation barrier: runs 100% offline directly in any browser.'}
+                ? 'کسی بھی ڈیوائس پر آف لائن چلتا ہے؛ آن لائن ہونے پر کلاؤڈ سے سنک ہوتا ہے' 
+                : 'Works offline on any device; syncs to the cloud when online.'}
             </p>
           </div>
         </div>
@@ -780,8 +831,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
             <p className="text-[11px] text-slate-600 leading-relaxed">
               {isUrdu 
-                ? 'تھرمل پرنٹر (80mm) یا لیزر پرنٹر (A4) کے ساتھ جوڑیں، کنٹرول+پی سے رسید پرنٹ کریں۔ انٹرنیٹ بند ہونے پر بھی کام جاری رہے گا۔' 
-                : 'Connects to any 80mm thermal receipt printer or standard A4 printer. All data stays offline.'}
+                ? 'تھرمل پرنٹر (80mm) یا لیزر پرنٹر (A4) کے ساتھ جوڑیں، کنٹرول+پی سے رسید پرنٹ کریں۔ آف لائن کام جاری رہتا ہے؛ آن لائن ہونے پر ڈیٹا کلاؤڈ سے سنک ہوتا ہے۔' 
+                : 'Connects to any 80mm thermal receipt printer or standard A4 printer. Works offline; syncs to the cloud when online.'}
             </p>
           </div>
 
@@ -811,7 +862,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900">
-                    {isUrdu ? 'نیا پولٹری کاروبار ون کلک سیٹ اپ' : '1-Click Fresh Poultry Setup'}
+                    {isUrdu ? 'دکان سیٹ اپ (موجودہ ڈیٹا پر)' : 'Shop Setup (on current data)'}
                   </h3>
                   <p className="text-[11px] text-slate-500">
                     {isUrdu ? 'اپنی دکان یا شیڈ کی معلومات درج کریں اور فوری شروع کریں' : 'Configure your shop name, galla cash & starting stock'}
@@ -849,18 +900,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    {isUrdu ? 'مالک / منشی کا نام:' : 'Owner / Manager Name:'}
-                  </label>
-                  <input
-                    type="text"
-                    value={wizardOwnerName}
-                    onChange={(e) => setWizardOwnerName(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold text-slate-900"
-                    required
-                  />
-                </div>
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
                     {isUrdu ? 'منڈی شہر:' : 'Mandi Hub City:'}
@@ -923,8 +962,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
                 <span>
                   {isUrdu 
-                    ? 'یہ نیا سیٹ اپ بنیادی کھاتے اور کیش درج کر دے گا اور آپ فوری طور پر کسٹمرز کو بل بنا کر دے سکیں گے۔' 
-                    : 'This will initialize clean shop ledgers with your custom cash & stock balance.'}
+                    ? 'یہ دکان کی تفصیلات، کیش، ریٹ اور اسٹاک موجودہ ڈیٹا پر سیٹ کر دے گا — پرانا ڈیٹا / کھاتے برقرار رہیں گے۔ نئے سرے سے شروع کرنے کے لیے Danger Zone سے تمام ڈیٹا حذف کریں۔' 
+                    : 'This sets shop details, cash, rate and stock on the CURRENT data — existing records and ledgers stay as they are. To start fresh, wipe all data from the Danger Zone.'}
                 </span>
               </div>
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Party, LedgerEntry, Invoice, UserRole } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
+import { downloadFile } from '../../utils/exportImport';
 import { generateLedgerPDF, brandingFromSettings, loadLogoDataUrl } from '../../utils/pdfGenerator';
 import { useBusiness } from '../../context/BusinessContext';
 import { PartyModal } from '../common/PartyModal';
@@ -25,6 +26,46 @@ import {
   Pencil,
   X,
 } from 'lucide-react';
+
+type AgingBuckets = { current: number; days8to15: number; days16to30: number; days30plus: number };
+
+// "Today" in PKT — local helper; do not import todayPKT from
+// calculations.ts (a sibling agent is adding it there and the import may not
+// exist yet).
+const todayPKT = (): string =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+// FIFO aging: walk the party's non-void entries chronologically; each debit
+// opens a lot, each credit consumes the oldest lots first. Remaining open
+// lots are bucketed by age from entryDate vs today (0-7, 8-15, 16-30, 30+).
+function computeAgingBuckets(entries: LedgerEntry[], today: string): AgingBuckets {
+  const lots: { date: string; amount: number }[] = [];
+  const sorted = [...entries]
+    .filter((e) => !e.isVoid)
+    .sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.createdAt.localeCompare(b.createdAt));
+  for (const e of sorted) {
+    if ((e.debit || 0) > 0) lots.push({ date: e.entryDate, amount: e.debit });
+    let credit = e.credit || 0;
+    while (credit > 0 && lots.length > 0) {
+      const take = Math.min(lots[0].amount, credit);
+      lots[0].amount -= take;
+      credit -= take;
+      if (lots[0].amount <= 0) lots.shift();
+    }
+  }
+  const todayMs = Date.parse(`${today}T00:00:00Z`);
+  const buckets: AgingBuckets = { current: 0, days8to15: 0, days16to30: 0, days30plus: 0 };
+  for (const lot of lots) {
+    if (lot.amount <= 0) continue;
+    const ageMs = todayMs - Date.parse(`${lot.date}T00:00:00Z`);
+    const ageDays = Number.isFinite(ageMs) ? Math.max(0, Math.floor(ageMs / 86400000)) : 0;
+    if (ageDays <= 7) buckets.current += lot.amount;
+    else if (ageDays <= 15) buckets.days8to15 += lot.amount;
+    else if (ageDays <= 30) buckets.days16to30 += lot.amount;
+    else buckets.days30plus += lot.amount;
+  }
+  return buckets;
+}
 
 interface CustomerLedgerViewProps {
   parties: Party[];
@@ -107,13 +148,16 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
   const totalCredit = filteredEntries.reduce((sum, e) => sum + (e.credit || 0), 0);
   const finalBalance = selectedCustomer?.currentBalance || 0;
 
-  // Aging breakdown
-  const aging = {
-    current: Math.max(0, finalBalance * 0.4),
-    days8to15: Math.max(0, finalBalance * 0.3),
-    days16to30: Math.max(0, finalBalance * 0.2),
-    days30plus: Math.max(0, finalBalance * 0.1),
-  };
+  // Aging breakdown — real FIFO lots from the party's own ledger entries,
+  // not a fixed 40/30/20/10 split of the balance. Uses ALL of the party's
+  // entries (not the date-filtered view), since aging describes the whole
+  // outstanding balance.
+  const aging: AgingBuckets = selectedCustomer
+    ? computeAgingBuckets(
+        ledgerEntries.filter((e) => e.partyId === selectedCustomer.id),
+        todayPKT()
+      )
+    : { current: 0, days8to15: 0, days16to30: 0, days30plus: 0 };
 
   const handleWhatsAppShare = () => {
     if (!selectedCustomer?.whatsapp) {
@@ -158,14 +202,8 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
       e.credit,
       e.runningBalance
     ]);
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Khata_${selectedCustomer?.name || 'ledger'}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    downloadFile(csvContent, `Khata_${selectedCustomer?.name || 'ledger'}.csv`, 'text/csv;charset=utf-8;');
   };
 
   return (

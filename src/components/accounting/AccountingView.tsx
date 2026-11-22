@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   AccountItem, 
   DayClosing, 
@@ -8,7 +8,9 @@ import {
   Purchase, 
   ExpenseItem, 
   Party, 
-  GeneralJournalEntry 
+  GeneralJournalEntry,
+  InventoryItem,
+  Employee
 } from '../../types';
 import { formatPKR } from '../../utils/calculations';
 import { nextDocNumber } from '../../utils/docNumbers';
@@ -48,7 +50,10 @@ interface AccountingViewProps {
   expenses?: ExpenseItem[];
   parties?: Party[];
   generalEntries?: GeneralJournalEntry[];
+  inventory?: InventoryItem[];
+  employees?: Employee[];
   onUpdateDayClosing: (closing: DayClosing) => void;
+  onUpdateAccounts: (accounts: AccountItem[]) => void;
   onAddGeneralEntry?: (entry: GeneralJournalEntry) => void;
   onDeleteGeneralEntry?: (entryId: string) => void;
 }
@@ -64,18 +69,41 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   expenses = [],
   parties = [],
   generalEntries = [],
+  inventory = [],
+  employees,
   onUpdateDayClosing,
+  onUpdateAccounts,
   onAddGeneralEntry,
   onDeleteGeneralEntry
 }) => {
   const isUrdu = language === 'ur';
-  const todayStr = new Date().toISOString().split('T')[0];
+  // "Today" in PKT — the business day the owner counts cash against.
+  const todayPKT = (): string =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const todayStr = todayPKT();
 
   const [activeTab, setActiveTab] = useState<'roznamcha' | 'chart' | 'pnl' | 'balance_sheet'>('roznamcha');
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [typeFilter, setTypeFilter] = useState<'all' | 'cash' | 'sales' | 'purchases' | 'expenses' | 'journal'>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [physicalCash, setPhysicalCash] = useState<number>(dayClosing.physicalCash);
+  // W13: the cash-count field must NOT pre-fill from a stale closing. The
+  // seed closing (2024-10-07) carried 840,000/840,000, so pre-filling made
+  // "variance Rs 0" tautological. Only a closing dated for the selected day
+  // counts; anything else starts the count at 0.
+  const closingCashForDate = dayClosing.date === selectedDate ? dayClosing.physicalCash : 0;
+  const [physicalCash, setPhysicalCash] = useState<number>(closingCashForDate);
+  const prevClosingCashRef = useRef(closingCashForDate);
+  const prevSelectedDateRef = useRef(selectedDate);
+  // Re-sync the count when the viewed date changes, or when the stored
+  // closing for the viewed date arrives/changes — never while the user is
+  // typing a count for the same date.
+  useEffect(() => {
+    if (selectedDate !== prevSelectedDateRef.current || closingCashForDate !== prevClosingCashRef.current) {
+      prevSelectedDateRef.current = selectedDate;
+      prevClosingCashRef.current = closingCashForDate;
+      setPhysicalCash(closingCashForDate);
+    }
+  }, [selectedDate, closingCashForDate]);
   const [closingNotice, setClosingNotice] = useState<string | null>(null);
 
   // Modal State for New General Journal Entry
@@ -85,9 +113,22 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const [jDescEn, setJDescEn] = useState<string>('');
   const [jDebitCode, setJDebitCode] = useState<string>('5030');
   const [jCreditCode, setJCreditCode] = useState<string>('1020');
-  const [jAmount, setJAmount] = useState<number>(500);
+  const [jAmount, setJAmount] = useState<number>(0);
   const [jPartyId, setJPartyId] = useState<string>('');
   const [jRefNo, setJRefNo] = useState<string>('');
+
+  // Chart of Accounts opening-balance editor (P0-4e): edits stay local until
+  // Save, which hands the full updated array to the parent for persistence
+  // (this component never persists accounts itself).
+  const [editedBalances, setEditedBalances] = useState<Record<string, number>>({});
+  const hasBalanceEdits = Object.keys(editedBalances).length > 0;
+  const handleSaveBalances = () => {
+    if (!hasBalanceEdits) return;
+    onUpdateAccounts(accounts.map((a) =>
+      editedBalances[a.code] !== undefined ? { ...a, balance: editedBalances[a.code] } : a
+    ));
+    setEditedBalances({});
+  };
 
   const variance = physicalCash - dayClosing.systemCash;
   const isOwner = currentRole === 'owner';
@@ -146,11 +187,17 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     setIsJournalModalOpen(false);
     setJDescUrdu('');
     setJDescEn('');
-    setJAmount(500);
+    setJAmount(0);
     setJRefNo('');
     setClosingNotice(isUrdu ? 'نئی روزنامچہ اینٹری کامیابی سے درج ہو گئی!' : 'Journal entry added successfully!');
     setTimeout(() => setClosingNotice(null), 3000);
   };
+
+  // A cash/bank/wallet account by COA code. The seed COA has no 111x/112x
+  // rows, but the check covers bank sub-accounts if one is added later.
+  const isCashAccount = (code: string) =>
+    code === '1010' || code === '1020' || code === '1030' || code === '1040' ||
+    code.startsWith('111') || code.startsWith('112');
 
   // Pakistani Roznamcha Consolidated Chronological Daily Activities Feed
   type RoznamchaItem = {
@@ -171,22 +218,32 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const allRoznamchaEntries = useMemo(() => {
     const list: RoznamchaItem[] = [];
 
-    // 1. Receipts (وصولیاں / اگرائی) -> Jama (جمع / Cash In)
+    // 1. Receipts — customer collections are cash IN (Jama); a receipt to a
+    // SUPPLIER is a payment out (Naam). The old code filed every receipt as
+    // cash_in, so paying a supplier showed as receiving money from them and
+    // the daybook's net cash was wrong by 2x the amount for that row.
     receipts.forEach((r) => {
       const party = parties.find(p => p.id === r.partyId);
+      const isSupplierPayment = r.partyType === 'supplier';
       const isCash = r.paymentMode === 'cash';
       list.push({
         id: `rec-${r.id}`,
         entryDate: r.receiptDate,
         time: new Date(r.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         voucherNo: r.receiptNumber,
-        category: 'cash_in',
-        categoryLabelUrdu: isCash ? 'نقد وصولی (اگرائی)' : 'بینک وصولی (اگرائی)',
+        category: isSupplierPayment ? 'cash_out' : 'cash_in',
+        categoryLabelUrdu: isSupplierPayment
+          ? 'سپلائر کو ادائیگی'
+          : isCash ? 'نقد وصولی (اگرائی)' : 'بینک وصولی (اگرائی)',
         accountTitle: party?.urduName || party?.name || 'کسٹمر کھاتہ',
-        narration: `Payment collected from ${party?.name || 'Customer'} via ${r.paymentMode}`,
-        narrationUrdu: `${party?.urduName || party?.name || 'گاہک'} سے وصولی بذریعہ ${r.paymentMode} ${r.collectedBy ? `(وصول کنندہ: ${r.collectedBy})` : ''}`,
-        debitAmount: 0,
-        creditAmount: r.amount, // جمع (Jama)
+        narration: isSupplierPayment
+          ? `Payment made to supplier ${party?.name || 'Supplier'} via ${r.paymentMode}`
+          : `Payment collected from ${party?.name || 'Customer'} via ${r.paymentMode}`,
+        narrationUrdu: isSupplierPayment
+          ? `${party?.urduName || party?.name || 'سپلائر'} کو ادائیگی بذریعہ ${r.paymentMode}`
+          : `${party?.urduName || party?.name || 'گاہک'} سے وصولی بذریعہ ${r.paymentMode} ${r.collectedBy ? `(وصول کنندہ: ${r.collectedBy})` : ''}`,
+        debitAmount: isSupplierPayment ? r.amount : 0, // بنام (Naam / cash out)
+        creditAmount: isSupplierPayment ? 0 : r.amount, // جمع (Jama / cash in)
         isCash
       });
     });
@@ -285,6 +342,12 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
 
     // 5. General Journal Entries (جنرل اینٹریز)
     generalEntries.forEach((g) => {
+      // Only the CASH leg counts in the daybook totals: a JV that debits a
+      // cash account is cash in, one that credits a cash account is cash out,
+      // and a JV with no cash leg moves no cash (both 0). The full Dr/Cr
+      // stays in the narration — the row still shows both accounts.
+      const debitIsCash = isCashAccount(g.debitAccountCode);
+      const creditIsCash = isCashAccount(g.creditAccountCode);
       list.push({
         id: `gen-${g.id}`,
         entryDate: g.entryDate,
@@ -295,9 +358,9 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
         accountTitle: `${g.debitAccountName} / ${g.creditAccountName}`,
         narration: g.description,
         narrationUrdu: `${g.descriptionUrdu} [بنام: ${g.debitAccountName} | بہ جمع: ${g.creditAccountName}]`,
-        debitAmount: g.amount, // بنام
-        creditAmount: g.amount, // جمع
-        isCash: g.debitAccountCode === '1010' || g.creditAccountCode === '1010'
+        debitAmount: creditIsCash ? g.amount : 0, // cash out only
+        creditAmount: debitIsCash ? g.amount : 0, // cash in only
+        isCash: debitIsCash || creditIsCash
       });
     });
 
@@ -328,22 +391,67 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const totalJama = filteredRoznamcha.reduce((s, i) => s + i.creditAmount, 0);
   const totalNaam = filteredRoznamcha.reduce((s, i) => s + i.debitAmount, 0);
 
-  // Cash In Hand calculation for selected day
+  // Cash In Hand calculation for selected day. JV rows already carry only
+  // their cash effect in credit/debitAmount, so the category filter is
+  // enough — the old accountTitle.includes('1010') check could never match
+  // (titles carry names, not codes) and is gone.
   const cashInToday = filteredRoznamcha
-    .filter(i => i.isCash && (i.category === 'cash_in' || (i.category === 'journal' && i.accountTitle.includes('1010'))))
+    .filter(i => i.isCash && (i.category === 'cash_in' || i.category === 'journal'))
     .reduce((s, i) => s + i.creditAmount, 0);
   const cashOutToday = filteredRoznamcha
-    .filter(i => i.isCash && (i.category === 'cash_out' || i.category === 'expense' || (i.category === 'journal' && i.accountTitle.includes('1010'))))
+    .filter(i => i.isCash && (i.category === 'cash_out' || i.category === 'expense' || i.category === 'journal'))
     .reduce((s, i) => s + i.debitAmount, 0);
 
-  // P&L Metrics
-  const totalRevenue = accounts.filter(a => a.category === 'revenue').reduce((s, a) => s + a.balance, 0);
-  const totalCOGS = accounts.filter(a => a.code === '5010').reduce((s, a) => s + a.balance, 0);
-  const totalExpenses = accounts.filter(a => a.category === 'expense').reduce((s, a) => s + a.balance, 0);
+  // P&L Metrics — derived from LIVE documents, not COA balances. The COA
+  // balances are never maintained by daily flows (they showed Rs 0 revenue
+  // despite real sales), so revenue/COGS/expenses come from invoices,
+  // purchases and expense vouchers directly. Net MUST equal the lines shown.
+  const liveInvoices = invoices.filter((i) => !i.isVoid);
+  const totalRevenue = liveInvoices.reduce((s, i) => s + (i.totalAmount || 0), 0);
+  const totalCOGS = purchases.reduce((s, p) => s + (p.totalAmount || 0), 0);
+  const totalFuel = expenses.filter((e) => e.category === 'fuel').reduce((s, e) => s + (e.amount || 0), 0);
+  const totalSalaries = expenses.filter((e) => e.category === 'labor').reduce((s, e) => s + (e.amount || 0), 0);
+  const totalOtherExpenses = expenses
+    .filter((e) => e.category !== 'fuel' && e.category !== 'labor')
+    .reduce((s, e) => s + (e.amount || 0), 0);
   const grossProfit = totalRevenue - totalCOGS;
-  const netProfit = totalRevenue - totalExpenses;
-  const totalSalesKg = dayClosing.totalSalesKg ?? 0;
+  const netProfit = totalRevenue - totalCOGS - totalFuel - totalSalaries - totalOtherExpenses;
+  const totalSalesKg = liveInvoices.reduce((s, i) => s + (i.netWeightKg || 0), 0);
   const profitPerKg = totalSalesKg > 0 ? (netProfit / totalSalesKg) : 0;
+
+  // Balance Sheet — every figure from live data; nothing hardcoded. When a
+  // source is empty the figure is Rs 0 with a note, never a made-up number.
+  const balanceOf = (code: string) => accounts.find((a) => a.code === code)?.balance ?? 0;
+  const bsCash = balanceOf('1010');
+  const bsBank = accounts
+    .filter((a) => a.code === '1020' || a.code.startsWith('112'))
+    .reduce((s, a) => s + (a.balance || 0), 0);
+  const bsWallets = balanceOf('1030') + balanceOf('1040');
+  const bsUdhaar = parties
+    .filter((p) => p.partyType === 'customer')
+    .reduce((s, p) => s + Math.max(0, p.currentBalance || 0), 0);
+  const bsPayables = parties
+    .filter((p) => p.partyType === 'supplier')
+    .reduce((s, p) => s + Math.max(0, p.currentBalance || 0), 0);
+  const bsAdvances = employees
+    ? employees.reduce((s, e) => s + (e.advanceBalance || 0), 0)
+    : 0;
+  // Farm bird stock: BR-LIVE weight valued at the latest invoice's mandi
+  // rate. No invoice rate on record => value 0 with an honest note, never a
+  // fabricated rate.
+  const liveStockRow = inventory.find((i) => i.code === 'BR-LIVE');
+  const liveStockKg = liveStockRow?.currentWeightKg ?? 0;
+  const latestMandiRate = [...invoices]
+    .filter((i) => !i.isVoid && (i.mandiRatePer40kg || 0) > 0)
+    .sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate))[0]?.mandiRatePer40kg;
+  const bsStockValue = latestMandiRate ? Math.round((liveStockKg * latestMandiRate) / 40) : 0;
+  const bsTotalAssets = bsCash + bsBank + bsWallets + bsUdhaar + bsStockValue;
+  const bsTotalLiabilities = bsPayables + bsAdvances;
+  const bsOwnerCapital = balanceOf('3010');
+  // Retained earnings is the balancing plug — labelled as such in the UI,
+  // not presented as a measured figure.
+  const bsRetainedEarnings = bsTotalAssets - bsTotalLiabilities - bsOwnerCapital;
+  const bsTotalLiabEquity = bsTotalLiabilities + bsOwnerCapital + bsRetainedEarnings;
 
   return (
     <div className="space-y-6">
@@ -445,6 +553,13 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                   {isUrdu ? 'محفوظ' : 'Save'}
                 </button>
               </div>
+              {dayClosing.date !== selectedDate && (
+                <span className="text-[10px] text-amber-700 font-bold mt-1 block">
+                  {isUrdu
+                    ? `اس تاریخ کا کوئی اختتام محفوظ نہیں — گنتی 0 سے شروع`
+                    : `No closing saved for ${selectedDate} — count starts at 0`}
+                </span>
+              )}
             </div>
 
             <div className={`p-4 rounded-2xl border shadow-sm ${
@@ -658,40 +773,86 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       {/* TAB 2: CHART OF ACCOUNTS */}
       {activeTab === 'chart' && (
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-          <h3 className="text-sm font-bold text-slate-900">
-            {isUrdu ? 'پاکستان چارٹ آف اکاؤنٹس (Chart of Accounts)' : 'Chart of Accounts'}
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left text-slate-700 border-collapse">
-              <thead className="bg-slate-100 text-slate-800 uppercase font-bold text-[11px]">
-                <tr>
-                  <th className="p-3 border-b">{isUrdu ? 'کوڈ' : 'Code'}</th>
-                  <th className="p-3 border-b">{isUrdu ? 'اکاؤنٹ کا نام' : 'Account Name'}</th>
-                  <th className="p-3 border-b">{isUrdu ? 'کیٹیگری' : 'Category'}</th>
-                  <th className="p-3 border-b text-right">{isUrdu ? 'بیلنس (روپے)' : 'Balance (PKR)'}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {accounts.map((acc) => (
-                  <tr key={acc.code} className="hover:bg-slate-50">
-                    <td className="p-3 font-mono font-bold text-slate-900">{acc.code}</td>
-                    <td className="p-3 font-medium">
-                      <span>{acc.name}</span>
-                      <span className="font-urdu text-emerald-800 mr-2 text-[13px]"> ({acc.urduName})</span>
-                    </td>
-                    <td className="p-3 capitalize">
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
-                        {acc.category}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right font-mono font-bold text-slate-900">
-                      Rs {acc.balance.toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">
+                {isUrdu ? 'پاکستان چارٹ آف اکاؤنٹس (Chart of Accounts)' : 'Chart of Accounts'}
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                {isUrdu
+                  ? 'افتتاحی بیلنس ایک بار درج کریں — نقد، بینک، ادھار، واجبات جیسا گنا گیا۔ تبدیلی کے بعد محفوظ کریں۔'
+                  : 'Set opening balances once — cash, bank, receivables, payables as counted. Press Save after editing.'}
+              </p>
+            </div>
+            <button
+              onClick={handleSaveBalances}
+              disabled={!hasBalanceEdits}
+              className={`px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition ${
+                hasBalanceEdits
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+              }`}
+            >
+              {isUrdu ? 'بیلنس محفوظ کریں' : 'Save Balances'}
+              {hasBalanceEdits && (
+                <span className="ml-1.5 text-[10px] bg-white/25 px-1.5 py-0.5 rounded-full">
+                  {isUrdu ? 'غیر محفوظ تبدیلیاں' : 'unsaved changes'}
+                </span>
+              )}
+            </button>
           </div>
+          {accounts.length === 0 ? (
+            <div className="p-8 text-center text-sm text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
+              {isUrdu
+                ? 'ابھی کوئی کھاتہ نہیں — اگلی ریفریش پر کھاتے خود بخود بن جائیں گے۔'
+                : 'No accounts yet — they are created automatically on the next refresh.'}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left text-slate-700 border-collapse">
+                <thead className="bg-slate-100 text-slate-800 uppercase font-bold text-[11px]">
+                  <tr>
+                    <th className="p-3 border-b">{isUrdu ? 'کوڈ' : 'Code'}</th>
+                    <th className="p-3 border-b">{isUrdu ? 'اکاؤنٹ کا نام' : 'Account Name'}</th>
+                    <th className="p-3 border-b">{isUrdu ? 'کیٹیگری' : 'Category'}</th>
+                    <th className="p-3 border-b text-right">{isUrdu ? 'بیلنس (روپے)' : 'Balance (PKR)'}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {accounts.map((acc) => (
+                    <tr key={acc.code} className="hover:bg-slate-50">
+                      <td className="p-3 font-mono font-bold text-slate-900">{acc.code}</td>
+                      <td className="p-3 font-medium">
+                        <span>{acc.name}</span>
+                        <span className="font-urdu text-emerald-800 mr-2 text-[13px]"> ({acc.urduName})</span>
+                      </td>
+                      <td className="p-3 capitalize">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
+                          {acc.category}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">
+                        <input
+                          type="number"
+                          value={editedBalances[acc.code] ?? acc.balance}
+                          onChange={(e) => setEditedBalances((prev) => ({
+                            ...prev,
+                            [acc.code]: parseFloat(e.target.value) || 0,
+                          }))}
+                          className={`w-32 px-2 py-1 rounded-lg border text-right font-mono font-bold text-slate-900 ${
+                            editedBalances[acc.code] !== undefined
+                              ? 'border-amber-400 bg-amber-50'
+                              : 'border-slate-300'
+                          }`}
+                          aria-label={`Balance for ${acc.name}`}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -702,7 +863,11 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
             <h3 className="text-lg font-black text-slate-900">
               {isUrdu ? 'گوشوارہ نفع و نقصان (Profit & Loss Statement)' : 'Profit & Loss Statement'}
             </h3>
-            <span className="text-xs text-slate-500 font-mono">Current Financial Year</span>
+            <span className="text-xs text-slate-500 font-mono">
+              {isUrdu
+                ? 'لائیو انوائسز، خریداریوں اور اخراجات سے — تمام ریکارڈ شدہ مدت'
+                : 'From live invoices, purchases & expenses — all recorded'}
+            </span>
           </div>
 
           <div className="space-y-3 text-xs divide-y divide-slate-100">
@@ -723,12 +888,17 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
 
             <div className="flex justify-between py-2 text-slate-600">
               <span>{isUrdu ? 'گاڑی پیٹرول و مرمت (Diesel & Vehicle):' : 'Vehicle Fuel & Maintenance:'}</span>
-              <span className="font-mono">- Rs 65,000</span>
+              <span className="font-mono">- Rs {totalFuel.toLocaleString()}</span>
             </div>
 
             <div className="flex justify-between py-2 text-slate-600">
-              <span>{isUrdu ? 'اسٹاف تنخواہیں و متفرق (Salaries & Expense):' : 'Salaries & Admin Expense:'}</span>
-              <span className="font-mono">- Rs 95,000</span>
+              <span>{isUrdu ? 'اسٹاف تنخواہیں (Salaries & Labor):' : 'Salaries & Labor:'}</span>
+              <span className="font-mono">- Rs {totalSalaries.toLocaleString()}</span>
+            </div>
+
+            <div className="flex justify-between py-2 text-slate-600">
+              <span>{isUrdu ? 'دیگر اخراجات (Other Expenses):' : 'Other Expenses:'}</span>
+              <span className="font-mono">- Rs {totalOtherExpenses.toLocaleString()}</span>
             </div>
 
             <div className="flex justify-between py-3 text-base font-black bg-emerald-50 px-3 rounded-xl border border-emerald-200 text-emerald-950">
@@ -748,7 +918,15 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
 
       {/* TAB 4: BALANCE SHEET */}
       {activeTab === 'balance_sheet' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+        <div className="space-y-3 max-w-4xl mx-auto">
+          {accounts.length === 0 && (
+            <div className="p-4 text-center text-xs text-slate-500 bg-white rounded-2xl border border-slate-200 shadow-sm">
+              {isUrdu
+                ? 'ابھی کوئی کھاتہ نہیں — اعداد تب ظاہر ہوں گے جب چارٹ آف اکاؤنٹس بن جائے۔'
+                : 'No accounts on record yet — figures will appear once the chart of accounts is set up.'}
+            </div>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Assets */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3">
             <h4 className="text-sm font-bold text-slate-900 border-b pb-2 text-emerald-800">
@@ -756,28 +934,36 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
             </h4>
             <div className="space-y-2 text-xs">
               <div className="flex justify-between">
-                <span>Cash in Hand (نقد گلہ)</span>
-                <span className="font-mono font-bold">Rs 840,000</span>
+                <span>Cash in Hand (نقد گلہ) · 1010</span>
+                <span className="font-mono font-bold">Rs {bsCash.toLocaleString()}</span>
               </div>
               <div className="flex justify-between">
-                <span>Bank Accounts (بینک بیلنس)</span>
-                <span className="font-mono font-bold">Rs 1,450,000</span>
+                <span>Bank Accounts (بینک بیلنس) · 1020</span>
+                <span className="font-mono font-bold">Rs {bsBank.toLocaleString()}</span>
               </div>
               <div className="flex justify-between">
-                <span>Wallets (جاز کیش / ایزی پیسہ)</span>
-                <span className="font-mono font-bold">Rs 205,000</span>
+                <span>Wallets (جاز کیش / ایزی پیسہ) · 1030+1040</span>
+                <span className="font-mono font-bold">Rs {bsWallets.toLocaleString()}</span>
               </div>
               <div className="flex justify-between">
                 <span>Customer Udhaar (ادھار بقایا)</span>
-                <span className="font-mono font-bold">Rs 650,000</span>
+                <span className="font-mono font-bold">Rs {bsUdhaar.toLocaleString()}</span>
               </div>
               <div className="flex justify-between">
-                <span>Farm Bird Stock (مرغ اسٹاک)</span>
-                <span className="font-mono font-bold">Rs 920,000</span>
+                <span>
+                  Farm Bird Stock (مرغ اسٹاک)
+                  <span className="block text-[10px] text-slate-400 font-normal">
+                    {liveStockKg.toLocaleString()} kg BR-LIVE
+                    {latestMandiRate
+                      ? ` @ Rs ${latestMandiRate.toLocaleString()}/40kg (latest invoice mandi rate)`
+                      : ' — no mandi rate on record, valued at 0'}
+                  </span>
+                </span>
+                <span className="font-mono font-bold">Rs {bsStockValue.toLocaleString()}</span>
               </div>
               <div className="flex justify-between pt-2 border-t font-bold text-emerald-900 text-sm">
                 <span>Total Assets:</span>
-                <span className="font-mono">Rs 4,065,000</span>
+                <span className="font-mono">Rs {bsTotalAssets.toLocaleString()}</span>
               </div>
             </div>
           </div>
@@ -790,25 +976,34 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
             <div className="space-y-2 text-xs">
               <div className="flex justify-between">
                 <span>Supplier Payables (سپلائرز کے واجبات)</span>
-                <span className="font-mono font-bold">Rs 490,000</span>
+                <span className="font-mono font-bold">Rs {bsPayables.toLocaleString()}</span>
               </div>
               <div className="flex justify-between">
-                <span>Advances from Customers (پیشگی وصولیاں)</span>
-                <span className="font-mono font-bold">Rs 11,600</span>
+                <span>
+                  Advances to Staff (ملازمین پیشگی)
+                  {!employees && (
+                    <span className="block text-[10px] text-slate-400 font-normal">employee data not loaded</span>
+                  )}
+                </span>
+                <span className="font-mono font-bold">Rs {bsAdvances.toLocaleString()}</span>
               </div>
               <div className="flex justify-between">
-                <span>Owner Capital (مالک کا سرمایہ)</span>
-                <span className="font-mono font-bold">Rs 2,500,000</span>
+                <span>Owner Capital (مالک کا سرمایہ) · 3010</span>
+                <span className="font-mono font-bold">Rs {bsOwnerCapital.toLocaleString()}</span>
               </div>
               <div className="flex justify-between">
-                <span>Retained Earnings (محفوظ منافع)</span>
-                <span className="font-mono font-bold">Rs 1,063,400</span>
+                <span>
+                  Retained Earnings (محفوظ منافع)
+                  <span className="block text-[10px] text-slate-400 font-normal">balancing figure — not a measured amount</span>
+                </span>
+                <span className="font-mono font-bold">Rs {bsRetainedEarnings.toLocaleString()}</span>
               </div>
               <div className="flex justify-between pt-2 border-t font-bold text-slate-900 text-sm">
                 <span>Total Liabilities & Equity:</span>
-                <span className="font-mono">Rs 4,065,000</span>
+                <span className="font-mono">Rs {bsTotalLiabEquity.toLocaleString()}</span>
               </div>
             </div>
+          </div>
           </div>
         </div>
       )}

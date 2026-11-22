@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ExpenseItem, ExpenseCategory, Vehicle, PaymentMode, UserRole } from '../../types';
 import { formatPKR } from '../../utils/calculations';
+import { downloadFile } from '../../utils/exportImport';
 import { nextDocNumber } from '../../utils/docNumbers';
 import { 
   Receipt, 
@@ -38,18 +39,21 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   onDeleteExpense
 }) => {
   const isUrdu = language === 'ur';
+  // PKT calendar date (YYYY-MM-DD), not UTC.
+  const todayPKT = () =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [dateFilter, setDateFilter] = useState<string>('');
 
   // Form states
   const [expCategory, setExpCategory] = useState<ExpenseCategory>('fuel');
-  const [amount, setAmount] = useState<number>(3500);
+  const [amount, setAmount] = useState<number>(0);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('cash');
   const [vehicleId, setVehicleId] = useState<string>(vehicles[0]?.id || '');
-  const [description, setDescription] = useState<string>('Diesel for morning supply trip');
-  const [descriptionUrdu, setDescriptionUrdu] = useState<string>('مارننگ سپلائی ٹرپ ڈیزل خرچ');
-  const [paidTo, setPaidTo] = useState<string>('PSO Pump');
+  const [description, setDescription] = useState<string>('');
+  const [descriptionUrdu, setDescriptionUrdu] = useState<string>('');
+  const [paidTo, setPaidTo] = useState<string>('');
 
   const categories: { id: ExpenseCategory; nameEn: string; nameUr: string; icon: any }[] = [
     { id: 'fuel', nameEn: 'Vehicle Diesel / Fuel', nameUr: 'گاڑی پیٹرول و ڈیزل خرچ', icon: Fuel },
@@ -78,7 +82,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     const newExpense: ExpenseItem = {
       id: `exp-${Date.now()}`,
       expenseNumber: nextDocNumber('EXP', expenses.map((e) => e.expenseNumber), 100),
-      date: new Date().toISOString().split('T')[0],
+      date: todayPKT(),
       category: expCategory,
       categoryName: catObj?.nameEn || 'General',
       categoryUrduName: catObj?.nameUr || 'متفرق خرچ',
@@ -107,14 +111,8 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
       e.paymentMode,
       e.amount
     ]);
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Expenses_Report_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    downloadFile(csvContent, `Expenses_Report_${todayPKT()}.csv`, 'text/csv;charset=utf-8;');
   };
 
   return (
@@ -372,7 +370,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                       value={amount || ''}
                       onChange={(e) => setAmount(parseFloat(e.target.value) || 0)}
                       className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 font-mono text-base font-black text-rose-700"
-                      placeholder="3500"
+                      placeholder="0"
                       required
                     />
                   </div>
@@ -427,14 +425,27 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
-                  {isUrdu ? 'تفصیل / نوٹ:' : 'Expense Narration:'}
+                  {isUrdu ? 'تفصیل / نوٹ (انگریزی):' : 'Expense Narration (English):'}
                 </label>
                 <input
                   type="text"
-                  value={isUrdu ? descriptionUrdu : description}
-                  onChange={(e) => isUrdu ? setDescriptionUrdu(e.target.value) : setDescription(e.target.value)}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
                   placeholder="e.g. Morning route diesel, 30 liters"
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 text-slate-800"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  {isUrdu ? 'تفصیل / نوٹ (اردو):' : 'Expense Narration (Urdu):'}
+                </label>
+                <input
+                  type="text"
+                  value={descriptionUrdu}
+                  onChange={(e) => setDescriptionUrdu(e.target.value)}
+                  placeholder="مثلاً: صبح کی سپلائی کا ڈیزل"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 text-slate-800 font-urdu"
                 />
               </div>
 

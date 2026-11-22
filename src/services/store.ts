@@ -752,6 +752,9 @@ export interface AppState {
   currentRole: UserRole;
   language: 'en' | 'ur';
   todayMandiRate: number;
+  /** Market date (YYYY-MM-DD) of the mandi rate in todayMandiRate, so the
+   *  app can tell a fresh rate from a stale one. Set by fetchAll. */
+  mandiRateDate?: string;
   parties: Party[];
   invoices: Invoice[];
   receipts: ReceiptVoucher[];
@@ -820,7 +823,14 @@ export function isSeedId(id: string): boolean {
 function scrubSeedRows<T extends { id: string }>(rows: unknown): T[] {
   if (!Array.isArray(rows)) return [];
   return (rows as T[]).filter(
-    (r) => r && (typeof r.id !== 'string' || !isSeedId(r.id))
+    (r) =>
+      r &&
+      (typeof r.id !== 'string' ||
+        !isSeedId(r.id) ||
+        // The LIVE broiler stock row (code BR-LIVE) is real business data,
+        // not seed data — but its seed id 'inv-item-1' matches isSeedId,
+        // which used to drop it on every load and zero the stock.
+        (r as { code?: unknown }).code === 'BR-LIVE')
   );
 }
 

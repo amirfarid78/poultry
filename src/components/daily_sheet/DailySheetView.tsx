@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Party, ReceiptVoucher, Invoice, UserRole } from '../../types';
+import { Party, ReceiptVoucher, Invoice, LedgerEntry, UserRole } from '../../types';
 import { formatPKR, generateLedgerWhatsAppUrl } from '../../utils/calculations';
 import { useBusiness } from '../../context/BusinessContext';
 import { 
@@ -18,7 +18,6 @@ import {
   Building2, 
   ArrowUpRight,
   Send,
-  Filter,
   Trash2
 } from 'lucide-react';
 
@@ -26,6 +25,7 @@ interface DailySheetViewProps {
   parties: Party[];
   receipts: ReceiptVoucher[];
   invoices: Invoice[];
+  ledgerEntries: LedgerEntry[];
   currentRole: UserRole;
   language: 'en' | 'ur';
   onOpenReceiptModal: (partyId?: string) => void;
@@ -36,6 +36,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
   parties,
   receipts,
   invoices,
+  ledgerEntries,
   currentRole,
   language,
   onOpenReceiptModal,
@@ -46,7 +47,6 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
   const canVoidReceipt = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
   const todayStr = new Date().toISOString().split('T')[0];
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
-  const [selectedRoute, setSelectedRoute] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeSubTab, setActiveSubTab] = useState<'collections' | 'pending' | 'print_preview'>('collections');
 
@@ -56,6 +56,15 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
     parties.forEach((p) => map.set(p.id, p));
     return map;
   }, [parties]);
+
+  // Real ledger totals for one party — never a fabricated offset.
+  const ledgerTotalsFor = (partyId: string) => {
+    const entries = ledgerEntries.filter((e) => e.partyId === partyId && !e.isVoid);
+    return {
+      totalDebit: entries.reduce((s, e) => s + (e.debit || 0), 0),
+      totalCredit: entries.reduce((s, e) => s + (e.credit || 0), 0),
+    };
+  };
 
   // Consolidate all recoveries / ugrahi entries for selectedDate
   // 1. Receipts recorded via receipt vouchers
@@ -73,6 +82,8 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
       route: string;
       phone: string;
       amount: number;
+      cashAmount: number;
+      bankAmount: number;
       paymentMode: string;
       bankName?: string;
       previousBalance: number;
@@ -86,6 +97,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
     // Receipts for selected date (voided vouchers are excluded)
     receipts.filter(r => r.receiptDate === selectedDate && r.partyType === 'customer' && !r.isVoid).forEach((r) => {
       const party = customerMap.get(r.partyId);
+      const isCash = r.paymentMode === 'cash';
       list.push({
         id: r.id,
         refNo: r.receiptNumber,
@@ -98,17 +110,22 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
         route: party?.city || 'Local',
         phone: party?.phone || '',
         amount: r.amount,
+        cashAmount: isCash ? r.amount : 0,
+        bankAmount: isCash ? 0 : r.amount,
         paymentMode: r.paymentMode,
         bankName: r.bankName,
         previousBalance: r.previousBalance,
-        remainingBalance: r.newBalance,
+        // Remaining balance is the party's CURRENT balance — the stored
+        // newBalance predates later activity on the same account.
+        remainingBalance: party?.currentBalance ?? r.newBalance,
         collectedBy: r.collectedBy || 'منشی / کیشئر',
         notes: r.notes || (r.bankName ? `${r.bankName} (${r.refNo || ''})` : 'نقد وصولی')
       });
     });
 
     // Invoices with immediate cash/bank collections for selected date
-    invoices.filter(inv => inv.invoiceDate === selectedDate).forEach((inv) => {
+    // (voided invoices are audit history only — their collections don't count)
+    invoices.filter(inv => inv.invoiceDate === selectedDate && !inv.isVoid).forEach((inv) => {
       const recAmt = (inv.receivedCash || 0) + (inv.receivedAC || 0);
       if (recAmt > 0) {
         const party = customerMap.get(inv.customerId);
@@ -128,9 +145,11 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
           route: party?.city || 'Shop Sale',
           phone: party?.phone || '',
           amount: recAmt,
+          cashAmount: inv.receivedCash || 0,
+          bankAmount: inv.receivedAC || 0,
           paymentMode: mode,
           previousBalance: inv.previousBalance + inv.totalAmount,
-          remainingBalance: inv.newBalance,
+          remainingBalance: party?.currentBalance ?? inv.newBalance,
           collectedBy: 'سیل کاؤنٹر منشی',
           notes: `سیل انوائس مال کے وقت وصولی (${inv.netWeightKg} کلو مرغ)`
         });
@@ -143,7 +162,6 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
   // Filter recoveries by search query
   const filteredRecoveries = useMemo(() => {
     return dailyRecoveries.filter(item => {
-      if (selectedRoute !== 'all' && item.route !== selectedRoute) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         return item.partyName.toLowerCase().includes(q) ||
@@ -153,7 +171,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
       }
       return true;
     });
-  }, [dailyRecoveries, selectedRoute, searchQuery]);
+  }, [dailyRecoveries, searchQuery]);
 
   // Customers with pending balance (مارکیٹ ادھار وصولی لسٹ)
   const pendingCustomers = useMemo(() => {
@@ -162,14 +180,11 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
       .sort((a, b) => b.currentBalance - a.currentBalance);
   }, [parties]);
 
-  // Aggregate metrics
+  // Aggregate metrics — cash vs bank split per row, so a mixed cash+bank
+  // collection is never counted entirely as bank.
   const totalRecovered = dailyRecoveries.reduce((sum, r) => sum + r.amount, 0);
-  const totalCashRecovered = dailyRecoveries
-    .filter(r => r.paymentMode === 'cash')
-    .reduce((sum, r) => sum + r.amount, 0);
-  const totalBankRecovered = dailyRecoveries
-    .filter(r => r.paymentMode !== 'cash')
-    .reduce((sum, r) => sum + r.amount, 0);
+  const totalCashRecovered = dailyRecoveries.reduce((sum, r) => sum + (r.cashAmount || 0), 0);
+  const totalBankRecovered = dailyRecoveries.reduce((sum, r) => sum + (r.bankAmount || 0), 0);
   const totalMarketUdhar = pendingCustomers.reduce((sum, c) => sum + c.currentBalance, 0);
 
   // Quick export CSV
@@ -221,7 +236,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Top Banner & Control Bar */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-4">
+      <div className="no-print bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-md">
@@ -301,7 +316,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
       </div>
 
       {/* Date & Filter Toolbar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
+      <div className="no-print bg-white p-4 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
         <div className="sm:col-span-4 flex items-center gap-2">
           <label className="text-xs font-bold text-slate-700 whitespace-nowrap">
             {isUrdu ? 'تاریخ شیٹ:' : 'Sheet Date:'}
@@ -339,7 +354,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
       </div>
 
       {/* Summary KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="no-print grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex items-center justify-between text-slate-500 mb-1">
             <span className="text-[11px] font-bold uppercase tracking-wider">
@@ -354,7 +369,6 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
           </p>
           <div className="text-[11px] text-slate-500 mt-1 flex items-center justify-between">
             <span>{dailyRecoveries.length} {isUrdu ? 'وصولیاں درج' : 'Receipts'}</span>
-            <span className="text-emerald-600 font-bold">100% Verified</span>
           </div>
         </div>
 
@@ -594,8 +608,8 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
                       partyName: c.urduName || c.name,
                       asOfDate: selectedDate,
                       currentBalance: c.currentBalance,
-                      totalDebit: c.currentBalance,
-                      totalCredit: 0,
+                      totalDebit: ledgerTotalsFor(c.id).totalDebit,
+                      totalCredit: ledgerTotalsFor(c.id).totalCredit,
                       businessName: `${biz.nameUr} (${biz.nameEn})`
                     })}
                     target="_blank"
@@ -624,7 +638,7 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
       {/* SUB-TAB 3: AUTHENTIC PRINTABLE A4 SHEET VIEW (پراپر پرنٹ لے آؤٹ) */}
       {activeSubTab === 'print_preview' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between bg-emerald-50 p-3 rounded-xl border border-emerald-200 text-xs text-emerald-950 font-bold">
+          <div className="no-print flex items-center justify-between bg-emerald-50 p-3 rounded-xl border border-emerald-200 text-xs text-emerald-950 font-bold">
             <span>{isUrdu ? 'یہ روایتی پاکستانی پرنٹ شیٹ کا نمونہ ہے جسے A4 سائز میں پرنٹ کیا جا سکتا ہے۔' : 'This is the traditional Pakistani daily recovery format optimized for A4 print.'}</span>
             <button
               onClick={() => window.print()}
