@@ -919,7 +919,8 @@ export type OutboxTable =
   | 'trips'
   | 'invoice_voids'
   | 'receipt_voids'
-  | 'ledger_edits';
+  | 'ledger_edits'
+  | 'party_deletes';
 
 function rowParty(p: Party): Row {
   return {

@@ -61,6 +61,8 @@ export function outboxEntityId(entry: OutboxEntry): string | null {
       return strOrNull(p.receiptId) ?? strOrNull(p.id);
     case 'ledger_edits':
       return strOrNull(p.entryId) ?? strOrNull(p.id);
+    case 'party_deletes':
+      return strOrNull(p.partyId) ?? strOrNull(p.id);
     default:
       return strOrNull(p.id);
   }

@@ -10,6 +10,10 @@
 //   * update        -> update().eq('id', payload.id)
 //   * delete        -> delete().eq('id', payload.id)
 //   * trip_pings    -> plain INSERT (append-only BIGSERIAL id, no conflict key).
+//   * party_deletes -> delete_party_cascade RPC: the party and every linked
+//     document (invoices, receipts, orders, purchases) in one transaction.
+//     Plain deletes can't do this — RLS forbids hard-deleting invoices and
+//     receipts — so the RPC owns it, like the void RPCs below.
 //   * journal_entries -> insertJournalEntry; a duplicate-key error means the
 //     entry already exists, so it is treated as already synced and dropped.
 //   * One failing entry does NOT stop the run: attempts/last_error are
@@ -146,6 +150,21 @@ async function replayOne(
   pendingInserts: Set<string>
 ): Promise<boolean> {
   const table = entry.table as OutboxTable;
+
+  // party_deletes: route to the SECURITY DEFINER cascade RPC — it
+  // hard-deletes the party and every linked document in one transaction
+  // (invoices and receipts can never be hard-deleted through RLS, so the
+  // client can't do this with plain deletes). Idempotent: the RPC no-ops
+  // when the party is already gone, so a retry can never poison the queue.
+  if (table === 'party_deletes') {
+    const p = entry.payload as { partyId?: string };
+    if (!p.partyId) return true;
+    const { error } = await db.rpc('delete_party_cascade', {
+      p_party_id: p.partyId,
+    });
+    if (error) throw error;
+    return true;
+  }
 
   // Void pseudo-tables: route to the SECURITY DEFINER void RPCs (they own
   // the ledger reversals; the client never writes ledger_entries directly).

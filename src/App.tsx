@@ -318,30 +318,115 @@ function AppShell() {
     const s = stateRef.current;
     const party = s.parties.find((p) => p.id === partyId);
     if (!party) return false;
-    // Accounting safety: never delete a party that has documents. Voided
-    // invoices/receipts and cancelled orders count too — the DB foreign keys
-    // are NO ACTION, so the server keeps those rows forever (audit trail) and
-    // would reject the DELETE. Refusing upfront beats a poisoned outbox entry
-    // plus ledger rows that resurrect on the next refresh.
-    const hasDocs =
-      s.invoices.some((i) => i.customerId === partyId) ||
-      s.receipts.some((r) => r.partyId === partyId) ||
-      s.purchases.some((p) => p.supplierId === partyId) ||
-      s.orders.some((o) => o.customerId === partyId);
-    if (hasDocs) {
+    const isUrdu = s.language === 'ur';
+    // Documents linked to this party. Invoices/receipts can never be
+    // hard-deleted through RLS (append-only by design) and the FKs are
+    // NO ACTION, so a party with history is removed through the
+    // delete_party_cascade RPC, which wipes the party + every linked
+    // document in one server transaction.
+    const linkedInvoices = s.invoices.filter((i) => i.customerId === partyId);
+    const linkedReceipts = s.receipts.filter((r) => r.partyId === partyId);
+    const linkedPurchases = s.purchases.filter((p) => p.supplierId === partyId);
+    const linkedOrders = s.orders.filter((o) => o.customerId === partyId);
+    const docCount =
+      linkedInvoices.length +
+      linkedReceipts.length +
+      linkedPurchases.length +
+      linkedOrders.length;
+
+    if (docCount === 0) {
+      // No documents: the old plain delete (any manager+; RLS parties_delete_mgr).
+      setAppState((prev) => ({
+        ...prev,
+        parties: prev.parties.filter((p) => p.id !== partyId),
+        ledgerEntries: prev.ledgerEntries.filter((l) => l.partyId !== partyId),
+      }));
+      if (isUuid(partyId)) void persist('delete', 'parties', { id: partyId });
+      return true;
+    }
+
+    // Cascade delete destroys audit history — owner only (the RPC enforces
+    // this server-side too).
+    if (role !== 'owner') {
       alert(
-        s.language === 'ur'
-          ? `”${party.urduName || party.name}“ کے کھاتے میں ریکارڈ موجود ہے (وائڈ شدہ سمیت) — ہسٹری والا کھاتہ حذف نہیں ہو سکتا۔`
-          : `"${party.name}" has records on file (including voided ones) — an account with history cannot be deleted.`
+        isUrdu
+          ? `”${party.urduName || party.name}“ کے کھاتے میں ریکارڈ موجود ہے — ہسٹری والا کھاتہ صرف مالک حذف کر سکتا ہے۔`
+          : `"${party.name}" has records on file — only the owner can delete an account with history.`
       );
       return false;
     }
+    const ok = window.confirm(
+      isUrdu
+        ? `”${party.urduName || party.name}“ کا کھاتہ اور اس سے جڑا تمام ریکارڈ مستقل حذف ہو جائے گا: ${linkedInvoices.length} سیل، ${linkedReceipts.length} رسیدیں، ${linkedOrders.length} آرڈر، ${linkedPurchases.length} خریداریاں اور مکمل کھاتہ۔ یہ واپس نہیں ہوگا۔ جاری رکھیں؟`
+        : `This permanently deletes the account of "${party.name}" and ALL of its linked data: ${linkedInvoices.length} sales, ${linkedReceipts.length} receipts, ${linkedOrders.length} orders, ${linkedPurchases.length} purchases and the full ledger. This cannot be undone. Continue?`
+    );
+    if (!ok) return false;
+
+    // Optimistic local removal. Stock + cash mirror the server RPC and the
+    // void flows exactly: live (non-void) invoices restore BR-LIVE stock and
+    // rewind the day's sale/cash totals, purchases remove stock and return
+    // their paid cash, live cash receipts rewind the safe. Voided docs
+    // already had all of this reversed when they were voided.
+    const liveInvoices = linkedInvoices.filter((i) => !i.isVoid);
+    const liveReceipts = linkedReceipts.filter((r) => !r.isVoid);
+    const birdEst = (w: number, c?: number) => c || Math.round(w / 2);
+    const stockKg =
+      liveInvoices.reduce((a, i) => a + i.netWeightKg, 0) -
+      linkedPurchases.reduce((a, p) => a + p.netWeightKg, 0);
+    const stockBirds =
+      liveInvoices.reduce((a, i) => a + birdEst(i.netWeightKg, i.birdCount), 0) -
+      linkedPurchases.reduce((a, p) => a + birdEst(p.netWeightKg, p.birdCount), 0);
+    const invoiceCash = liveInvoices.reduce((a, i) => a + (i.receivedCash || 0), 0);
+    const invoiceTotRec = liveInvoices.reduce(
+      (a, i) => a + (i.receivedCash || 0) + (i.receivedAC || 0),
+      0
+    );
+    const invoiceKg = liveInvoices.reduce((a, i) => a + i.netWeightKg, 0);
+    const invoiceAmt = liveInvoices.reduce((a, i) => a + i.totalAmount, 0);
+    const receiptCashDelta = liveReceipts
+      .filter((r) => r.paymentMode === 'cash')
+      .reduce((a, r) => a + (r.partyType === 'supplier' ? -r.amount : r.amount), 0);
+    const receiptCollections = liveReceipts
+      .filter((r) => r.partyType === 'customer')
+      .reduce((a, r) => a + r.amount, 0);
+    const purchaseCash = linkedPurchases.reduce((a, p) => a + (p.paidCash || 0), 0);
+    const broiler = s.inventory.find(
+      (i) => i.category === 'broiler' && (i.id === 'inv-item-1' || i.code === 'BR-LIVE')
+    );
+    const broilerAfter = broiler
+      ? {
+          ...broiler,
+          currentWeightKg: Math.max(0, broiler.currentWeightKg + stockKg),
+          currentCount: Math.max(0, (broiler.currentCount || 0) + stockBirds),
+        }
+      : null;
+
     setAppState((prev) => ({
       ...prev,
       parties: prev.parties.filter((p) => p.id !== partyId),
+      invoices: prev.invoices.filter((i) => i.customerId !== partyId),
+      receipts: prev.receipts.filter((r) => r.partyId !== partyId),
+      purchases: prev.purchases.filter((p) => p.supplierId !== partyId),
+      orders: prev.orders.filter((o) => o.customerId !== partyId),
       ledgerEntries: prev.ledgerEntries.filter((l) => l.partyId !== partyId),
+      inventory: broilerAfter
+        ? prev.inventory.map((inv) => (inv.id === broilerAfter.id ? broilerAfter : inv))
+        : prev.inventory,
+      dayClosing: {
+        ...prev.dayClosing,
+        systemCash: Math.max(0, prev.dayClosing.systemCash - invoiceCash - receiptCashDelta + purchaseCash),
+        physicalCash: Math.max(0, prev.dayClosing.physicalCash - invoiceCash - receiptCashDelta + purchaseCash),
+        totalSalesKg: Math.max(0, prev.dayClosing.totalSalesKg - invoiceKg),
+        totalSalesAmount: Math.max(0, prev.dayClosing.totalSalesAmount - invoiceAmt),
+        totalCollections: Math.max(0, prev.dayClosing.totalCollections - invoiceTotRec - receiptCollections),
+      },
     }));
-    if (isUuid(partyId)) void persist('delete', 'parties', { id: partyId });
+    if (isUuid(partyId)) {
+      // Cascade FIRST so the outbox replays it before anything that follows.
+      void persist('insert', 'party_deletes', { id: partyId, partyId });
+      // Stock upsert, same pattern as the void flow (persistInvoiceStock).
+      if (broilerAfter) void persist('upsert', 'products', broilerAfter);
+    }
     return true;
   };
 

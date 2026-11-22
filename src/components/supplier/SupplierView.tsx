@@ -190,19 +190,14 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      const ok = window.confirm(
-                        isUrdu
-                          ? `کیا واقعی ”${selectedSupplier.urduName || selectedSupplier.name}“ کا کھاتہ حذف کرنا ہے؟ لین دین والا کھاتہ حذف نہیں ہوگا۔`
-                          : `Delete the account of "${selectedSupplier.name}"? Accounts with transactions cannot be deleted.`
-                      );
-                      if (ok && onDeleteParty) {
-                        const deleted = onDeleteParty(selectedSupplier.id);
-                        if (deleted) {
-                          const next = parties.find(
-                            (p) => p.partyType === 'supplier' && p.id !== selectedSupplier.id
-                          );
-                          setSelectedSupplierId(next?.id || '');
-                        }
+                      // The confirm (with linked-record counts) lives in
+                      // handleDeleteParty — it owns the full picture.
+                      const deleted = onDeleteParty(selectedSupplier.id);
+                      if (deleted) {
+                        const next = parties.find(
+                          (p) => p.partyType === 'supplier' && p.id !== selectedSupplier.id
+                        );
+                        setSelectedSupplierId(next?.id || '');
                       }
                     }}
                     className="text-[11px] font-bold text-rose-700 hover:text-rose-800 flex items-center gap-1"

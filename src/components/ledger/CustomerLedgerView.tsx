@@ -300,19 +300,14 @@ export const CustomerLedgerView: React.FC<CustomerLedgerViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      const ok = window.confirm(
-                        isUrdu
-                          ? `کیا واقعی ”${selectedCustomer.urduName || selectedCustomer.name}“ کا کھاتہ حذف کرنا ہے؟ لین دین والا کھاتہ حذف نہیں ہوگا۔`
-                          : `Delete the account of "${selectedCustomer.name}"? Accounts with transactions cannot be deleted.`
-                      );
-                      if (ok && onDeleteParty) {
-                        const deleted = onDeleteParty(selectedCustomer.id);
-                        if (deleted) {
-                          const next = parties.find(
-                            (p) => p.partyType === 'customer' && p.id !== selectedCustomer.id
-                          );
-                          setSelectedCustomerId(next?.id || '');
-                        }
+                      // The confirm (with linked-record counts) lives in
+                      // handleDeleteParty — it owns the full picture.
+                      const deleted = onDeleteParty(selectedCustomer.id);
+                      if (deleted) {
+                        const next = parties.find(
+                          (p) => p.partyType === 'customer' && p.id !== selectedCustomer.id
+                        );
+                        setSelectedCustomerId(next?.id || '');
                       }
                     }}
                     className="text-[11px] font-bold text-rose-700 hover:text-rose-800 flex items-center gap-1"

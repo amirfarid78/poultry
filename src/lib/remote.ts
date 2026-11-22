@@ -89,13 +89,19 @@ interface PendingOps {
  * Also collects doc ids with a pending void: until the void RPC lands, the
  * server's ledger rows for that doc are stale, so the local voided originals
  * + reversal rows win, and the voided doc + its party balance stay local.
+ *
+ * And party ids with a pending cascade delete (party_deletes): until the
+ * RPC lands, the server still holds the party and every document linked to
+ * it, so the merge must drop all of those rows — not just the party row.
  */
 function pendingByTable(pending: OutboxEntry[]): {
   byTable: Record<string, PendingOps>;
   voidRefIds: Set<string>;
+  cascadePartyIds: Set<string>;
 } {
   const byTable: Record<string, PendingOps> = {};
   const voidRefIds = new Set<string>();
+  const cascadePartyIds = new Set<string>();
   const ops = (key: string): PendingOps =>
     (byTable[key] ??= { pending: new Set<string>(), deleted: new Set<string>() });
   for (const e of pending) {
@@ -111,12 +117,20 @@ function pendingByTable(pending: OutboxEntry[]): {
       if (partyId) ops('parties').pending.add(partyId);
       continue;
     }
+    if (e.table === 'party_deletes') {
+      // One entry wipes the party AND all its documents server-side.
+      // Shield the party row via the deleted set, and shield its documents
+      // via cascadePartyIds (merge drops any server row owned by that party).
+      ops('parties').deleted.add(id);
+      cascadePartyIds.add(id);
+      continue;
+    }
     const key = TABLE_STATE_KEY[e.table];
     if (!key) continue;
     if (e.op === 'delete') ops(key).deleted.add(id);
     else ops(key).pending.add(id);
   }
-  return { byTable, voidRefIds };
+  return { byTable, voidRefIds, cascadePartyIds };
 }
 
 /**
@@ -140,13 +154,14 @@ export function reconcileState(
   remote: Partial<AppState>,
   pending: OutboxEntry[]
 ): AppState {
-  const { byTable, voidRefIds } = pendingByTable(pending);
+  const { byTable, voidRefIds, cascadePartyIds } = pendingByTable(pending);
   const EMPTY: PendingOps = { pending: new Set<string>(), deleted: new Set<string>() };
   const merge = <T,>(
     local: T[],
     server: T[] | undefined,
     stateKey: string,
-    getId: (r: T) => string
+    getId: (r: T) => string,
+    getPartyId?: (r: T) => string | undefined
   ): T[] => {
     if (!server) return local;
     const p = byTable[stateKey] ?? EMPTY;
@@ -157,6 +172,11 @@ export function reconcileState(
     for (const s of server) {
       const id = getId(s);
       if (p.deleted.has(id)) continue;
+      // A pending cascade delete owns every document of that party: the
+      // server rows are stale the moment the user confirmed the delete, so
+      // they must not resurrect on refresh while the RPC is still queued.
+      const ownerId = getPartyId?.(s);
+      if (ownerId && cascadePartyIds.has(ownerId)) continue;
       const l = localById.get(id);
       if (l !== undefined && p.pending.has(id)) {
         out.push(l);
@@ -175,11 +195,11 @@ export function reconcileState(
   const next: AppState = {
     ...prev,
     parties: merge(prev.parties, remote.parties, 'parties', byId),
-    invoices: merge(prev.invoices, remote.invoices, 'invoices', byId),
-    receipts: merge(prev.receipts, remote.receipts, 'receipts', byId),
-    purchases: merge(prev.purchases, remote.purchases, 'purchases', byId),
+    invoices: merge(prev.invoices, remote.invoices, 'invoices', byId, (i) => i.customerId),
+    receipts: merge(prev.receipts, remote.receipts, 'receipts', byId, (r) => r.partyId),
+    purchases: merge(prev.purchases, remote.purchases, 'purchases', byId, (p) => p.supplierId),
     expenses: merge(prev.expenses, remote.expenses, 'expenses', byId),
-    orders: merge(prev.orders, remote.orders, 'orders', byId),
+    orders: merge(prev.orders, remote.orders, 'orders', byId, (o) => o.customerId),
     vehicles: merge(prev.vehicles, remote.vehicles, 'vehicles', byId),
     trips: merge(prev.trips, remote.trips, 'trips', byId),
     inventory: merge(prev.inventory, remote.inventory, 'inventory', byId),
@@ -204,6 +224,9 @@ export function reconcileState(
     const out: typeof prev.ledgerEntries = [];
     for (const s of remote.ledgerEntries) {
       if (s.refId && voidRefIds.has(s.refId)) continue;
+      // The party's ledger rows die with it (ON DELETE CASCADE) once the
+      // RPC lands; until then the server rows are stale.
+      if (cascadePartyIds.has(s.partyId)) continue;
       const l = localById.get(s.id);
       if (l && p.pending.has(s.id)) {
         out.push(l);
