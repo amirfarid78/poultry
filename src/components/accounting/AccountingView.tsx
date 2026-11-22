@@ -12,7 +12,7 @@ import {
   InventoryItem,
   Employee
 } from '../../types';
-import { formatPKR } from '../../utils/calculations';
+import { formatPKR, computeFifoProfit } from '../../utils/calculations';
 import { nextDocNumber } from '../../utils/docNumbers';
 import { 
   DollarSign, 
@@ -406,16 +406,25 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   // balances are never maintained by daily flows (they showed Rs 0 revenue
   // despite real sales), so revenue/COGS/expenses come from invoices,
   // purchases and expense vouchers directly. Net MUST equal the lines shown.
+  // COGS is the FIFO cost of the goods ACTUALLY SOLD — not Σ all purchases
+  // (stock still in the sheds is not a cost). Mortality is a separate loss
+  // line, not part of COGS: dead birds were never sold.
   const liveInvoices = invoices.filter((i) => !i.isVoid);
+  const fifoProfit = computeFifoProfit(liveInvoices, purchases);
   const totalRevenue = liveInvoices.reduce((s, i) => s + (i.totalAmount || 0), 0);
-  const totalCOGS = purchases.reduce((s, p) => s + (p.totalAmount || 0), 0);
+  const totalCOGS = fifoProfit.totals.cogs;
   const totalFuel = expenses.filter((e) => e.category === 'fuel').reduce((s, e) => s + (e.amount || 0), 0);
   const totalSalaries = expenses.filter((e) => e.category === 'labor').reduce((s, e) => s + (e.amount || 0), 0);
   const totalOtherExpenses = expenses
     .filter((e) => e.category !== 'fuel' && e.category !== 'labor')
     .reduce((s, e) => s + (e.amount || 0), 0);
+  // Mortality & weight loss: Dr 5040 JV amounts as recorded (valued at the
+  // mandi rate when the JV was posted — an existing approximation, used as-is).
+  const totalMortality = (generalEntries ?? [])
+    .filter((g) => g.debitAccountCode === '5040')
+    .reduce((s, g) => s + (g.amount || 0), 0);
   const grossProfit = totalRevenue - totalCOGS;
-  const netProfit = totalRevenue - totalCOGS - totalFuel - totalSalaries - totalOtherExpenses;
+  const netProfit = totalRevenue - totalCOGS - totalFuel - totalSalaries - totalOtherExpenses - totalMortality;
   const totalSalesKg = liveInvoices.reduce((s, i) => s + (i.netWeightKg || 0), 0);
   const profitPerKg = totalSalesKg > 0 ? (netProfit / totalSalesKg) : 0;
 
@@ -436,15 +445,23 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const bsAdvances = employees
     ? employees.reduce((s, e) => s + (e.advanceBalance || 0), 0)
     : 0;
-  // Farm bird stock: BR-LIVE weight valued at the latest invoice's mandi
-  // rate. No invoice rate on record => value 0 with an honest note, never a
-  // fabricated rate.
+  // Farm bird stock: BR-LIVE weight valued at ACTUAL purchase cost — the
+  // weighted-average cost of the unsold FIFO lots. Mandi rate is never the
+  // valuation basis. No purchase cost on record => value 0 with an honest
+  // note, never a fabricated rate.
   const liveStockRow = inventory.find((i) => i.code === 'BR-LIVE');
   const liveStockKg = liveStockRow?.currentWeightKg ?? 0;
-  const latestMandiRate = [...invoices]
-    .filter((i) => !i.isVoid && (i.mandiRatePer40kg || 0) > 0)
-    .sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate))[0]?.mandiRatePer40kg;
-  const bsStockValue = latestMandiRate ? Math.round((liveStockKg * latestMandiRate) / 40) : 0;
+  const bsStockAvgCostPerKg =
+    fifoProfit.closingStock.avgCostPerKg > 0
+      ? fifoProfit.closingStock.avgCostPerKg
+      : (() => {
+          const latest = [...(purchases ?? [])]
+            .filter((p) => (p.ratePer40kg || 0) > 0)
+            .sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate))[0];
+          return latest ? latest.ratePer40kg / 40 : 0;
+        })();
+  const bsStockValue =
+    bsStockAvgCostPerKg > 0 ? Math.round(liveStockKg * bsStockAvgCostPerKg) : 0;
   const bsTotalAssets = bsCash + bsBank + bsWallets + bsUdhaar + bsStockValue;
   const bsTotalLiabilities = bsPayables + bsAdvances;
   const bsOwnerCapital = balanceOf('3010');
@@ -901,6 +918,11 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
               <span className="font-mono">- Rs {totalOtherExpenses.toLocaleString()}</span>
             </div>
 
+            <div className="flex justify-between py-2 text-slate-600">
+              <span>{isUrdu ? 'اموات و وزن کمی (Mortality & Weight Loss):' : 'Mortality & Weight Loss:'}</span>
+              <span className="font-mono">- Rs {totalMortality.toLocaleString()}</span>
+            </div>
+
             <div className="flex justify-between py-3 text-base font-black bg-emerald-50 px-3 rounded-xl border border-emerald-200 text-emerald-950">
               <span>{isUrdu ? 'خالص منافع (Net Profit):' : 'Net Profit:'}</span>
               <span className="font-mono text-emerald-700">Rs {netProfit.toLocaleString()}</span>
@@ -954,9 +976,9 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                   Farm Bird Stock (مرغ اسٹاک)
                   <span className="block text-[10px] text-slate-400 font-normal">
                     {liveStockKg.toLocaleString()} kg BR-LIVE
-                    {latestMandiRate
-                      ? ` @ Rs ${latestMandiRate.toLocaleString()}/40kg (latest invoice mandi rate)`
-                      : ' — no mandi rate on record, valued at 0'}
+                    {bsStockAvgCostPerKg > 0
+                      ? ` @ Rs ${Math.round(bsStockAvgCostPerKg * 40).toLocaleString()}/40kg (avg purchase cost)`
+                      : ' — no purchase cost on record, valued at 0'}
                   </span>
                 </span>
                 <span className="font-mono font-bold">Rs {bsStockValue.toLocaleString()}</span>

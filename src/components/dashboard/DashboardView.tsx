@@ -10,9 +10,10 @@ import {
   AccountItem, 
   UserRole,
   ExpenseItem,
-  LedgerEntry
+  LedgerEntry,
+  Purchase
 } from '../../types';
-import { formatPKR, generateLedgerWhatsAppUrl, computeTodayKpis } from '../../utils/calculations';
+import { formatPKR, generateLedgerWhatsAppUrl, computeTodayKpis, computeFifoProfit } from '../../utils/calculations';
 import { downloadFile } from '../../utils/exportImport';
 import { useBusiness } from '../../context/BusinessContext';
 import { 
@@ -69,6 +70,7 @@ interface DashboardViewProps {
   language: 'en' | 'ur';
   expenses?: ExpenseItem[];
   ledgerEntries: LedgerEntry[];
+  purchases?: Purchase[];
   onNavigateTab: (tab: string) => void;
   onOpenReceiptModal: (partyId?: string) => void;
 }
@@ -87,6 +89,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   language,
   expenses,
   ledgerEntries,
+  purchases = [],
   onNavigateTab,
   onOpenReceiptModal
 }) => {
@@ -142,15 +145,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   );
   // Signed number helper: a negative spread must render "-200", never "+-200".
   const signed = (v: number) => `${v >= 0 ? '+' : '-'}${Math.abs(v).toLocaleString()}`;
-  // Estimated profit today uses each invoice's OWN mandi rate — the spread
-  // against today's rate would misprice every earlier invoice in the day.
+  // TRUE profit today — FIFO on ACTUAL purchase cost, not the mandi rate.
+  // The old formula (sale − mandi) × kg / 40 counted only the sale margin
+  // and ignored what the birds actually cost: buying 1 Mann @ 12,000
+  // when mandi is 15,000 and selling @ 20,000 is 3,000 (purchase saving)
+  // + 5,000 (sale margin) = 8,000, not 5,000. computeFifoProfit gives
+  // the split per invoice; rows with no purchase history are costed at
+  // the mandi proxy and flagged isEstimate (labelled, never invented).
+  const fifoProfit = computeFifoProfit(liveInvoices, purchases);
+  const todayProfitRows = fifoProfit.perInvoice.filter((r) => r.invoiceDate === todayStr);
+  const estimatedProfitToday = todayProfitRows.reduce((s, r) => s + r.profit, 0);
+  const todayPurchaseSaving = todayProfitRows.reduce((s, r) => s + r.purchaseSaving, 0);
+  const todaySaleMargin = todayProfitRows.reduce((s, r) => s + r.saleMargin, 0);
+  const todayProfitCharges = todayProfitRows.reduce((s, r) => s + r.charges, 0);
+  const todayProfitIsEstimate = todayProfitRows.some((r) => r.isEstimate);
   const todayInvoices = liveInvoices.filter((inv) => inv.invoiceDate === todayStr);
-  const estimatedProfitToday = Math.round(
-    todayInvoices.reduce(
-      (s, inv) => s + (((inv.saleRatePer40kg || 0) - (inv.mandiRatePer40kg || 0)) * (inv.netWeightKg || 0)) / 40,
-      0
-    )
-  );
   // Margin tab figures are TODAY's — not the all-time average sale rate.
   const todayAvgSaleRate = todayInvoices.length > 0
     ? Math.round(todayInvoices.reduce((s, i) => s + (i.saleRatePer40kg || 0), 0) / todayInvoices.length)
@@ -187,15 +196,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   });
 
   // Daily Profit Trend computed from REAL invoices + expenses.
-  // Gross gain per invoice ≈ (saleRate − that invoice's mandiRate) × kg ÷ 40.
+  // Gross gain is the FIFO profit of that day's sales (sale value minus
+  // the ACTUAL purchase cost of the kg sold) — not the old
+  // (saleRate − mandiRate) spread, which ignored what the birds cost.
+  const fifoProfitByDay = new Map<string, number>();
+  for (const r of fifoProfit.perInvoice) {
+    fifoProfitByDay.set(r.invoiceDate, (fifoProfitByDay.get(r.invoiceDate) ?? 0) + r.profit);
+  }
   const dailyProfitTrendData = last7DayKeys.map((dateStr, i) => {
-    const dayInvoices = liveInvoices.filter((inv) => inv.invoiceDate === dateStr);
     const dayExpenses = (expenses ?? []).filter((e) => e.date === dateStr);
     const operatingExpenses = dayExpenses.reduce((s, e) => s + (e.amount || 0), 0);
-    const grossGain = dayInvoices.reduce((s, inv) => {
-      const margin = (inv.saleRatePer40kg || 0) - (inv.mandiRatePer40kg || 0);
-      return s + Math.round((margin * (inv.netWeightKg || 0)) / 40);
-    }, 0);
+    const grossGain = fifoProfitByDay.get(dateStr) ?? 0;
     const netGain = grossGain - operatingExpenses;
     const fuel = dayExpenses.filter((e) => e.category === 'fuel').reduce((s, e) => s + (e.amount || 0), 0);
     const labor = dayExpenses.filter((e) => e.category === 'labor').reduce((s, e) => s + (e.amount || 0), 0);
@@ -467,11 +478,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
 
-        {/* KPI 7: Estimated Profit Today */}
+        {/* KPI 7: Profit Today — FIFO on actual purchase cost.
+            Split: buying below mandi (purchase saving) + selling above
+            mandi (sale margin) + extra charges. "(تخمینہ)" when any kg
+            had no purchase history and was costed at the mandi proxy. */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition">
           <div className="flex items-center justify-between text-slate-500 mb-2">
             <span className="text-xs font-bold uppercase tracking-wider">
-              {isUrdu ? 'آج کا تخمینہ منافع' : 'Est. Profit Today'}
+              {isUrdu
+                ? todayProfitIsEstimate ? 'آج کا منافع (تخمینہ)' : 'آج کا منافع'
+                : todayProfitIsEstimate ? 'Profit Today (est.)' : 'Profit Today'}
             </span>
             <div className="p-2 rounded-xl bg-emerald-50 text-emerald-700">
               <Scale className="w-4 h-4" />
@@ -480,11 +496,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="text-2xl font-black text-emerald-700 font-mono">
             Rs {estimatedProfitToday.toLocaleString()}
           </div>
-          <div className="flex items-center justify-between text-xs text-slate-600 mt-2 pt-2 border-t border-slate-100 font-mono">
-            <span>{isUrdu ? 'فی کلو نفع:' : 'Profit/Kg:'}</span>
-            <span className="text-emerald-800 font-bold">
-              Rs {(todaySalesKg > 0 ? (estimatedProfitToday / todaySalesKg) : 0).toFixed(1)} / kg
-            </span>
+          <div className="text-xs text-slate-600 mt-2 pt-2 border-t border-slate-100 font-mono space-y-1">
+            <div className="flex items-center justify-between">
+              <span>{isUrdu ? 'فی کلو نفع:' : 'Profit/Kg:'}</span>
+              <span className="text-emerald-800 font-bold">
+                Rs {(todaySalesKg > 0 ? (estimatedProfitToday / todaySalesKg) : 0).toFixed(1)} / kg
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>{isUrdu ? 'خرید بچت + سیل مارجن:' : 'Buy saving + sale margin:'}</span>
+              <span className="text-slate-800 font-bold">
+                Rs {todayPurchaseSaving.toLocaleString()} + Rs {todaySaleMargin.toLocaleString()}
+                {todayProfitCharges > 0 ? ` + Rs ${todayProfitCharges.toLocaleString()}` : ''}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -1038,30 +1063,65 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         {/* REPORT TAB 3: MANDI MARGIN & PROFIT PER KG */}
         {activeReportTab === 'margin' && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
-              <span className="text-[11px] font-bold text-slate-500 block uppercase">
-                {isUrdu ? 'آج کا منڈی ریٹ' : 'Today\'s Mandi Rate'}
-              </span>
-              <p className="text-xl font-black text-slate-900 font-mono mt-1">
-                Rs {todayMandiRate.toLocaleString()} <span className="text-xs text-slate-500">/40kg</span>
-              </p>
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
+                <span className="text-[11px] font-bold text-slate-500 block uppercase">
+                  {isUrdu ? 'آج کا منڈی ریٹ' : 'Today\'s Mandi Rate'}
+                </span>
+                <p className="text-xl font-black text-slate-900 font-mono mt-1">
+                  Rs {todayMandiRate.toLocaleString()} <span className="text-xs text-slate-500">/40kg</span>
+                </p>
+              </div>
+              <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
+                <span className="text-[11px] font-bold text-slate-500 block uppercase">
+                  {isUrdu ? 'آج کا اوسط سیل ریٹ' : 'Today\'s Avg Selling Rate'}
+                </span>
+                <p className="text-xl font-black text-emerald-700 font-mono mt-1">
+                  Rs {todayAvgSaleRate.toLocaleString()} <span className="text-xs text-slate-500">/40kg</span>
+                </p>
+              </div>
+              <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
+                <span className="text-[11px] font-bold text-slate-500 block uppercase">
+                  {isUrdu ? 'آج کا اصل نفع فی کلو' : 'Today\'s Real Profit per Kg'}
+                </span>
+                <p className="text-xl font-black text-emerald-800 font-mono mt-1">
+                  Rs {(todaySalesKg > 0 ? (estimatedProfitToday / todaySalesKg) : 0).toFixed(2)} / kg
+                </p>
+              </div>
             </div>
-            <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
-              <span className="text-[11px] font-bold text-slate-500 block uppercase">
-                {isUrdu ? 'آج کا اوسط سیل ریٹ' : 'Today\'s Avg Selling Rate'}
-              </span>
-              <p className="text-xl font-black text-emerald-700 font-mono mt-1">
-                Rs {todayAvgSaleRate.toLocaleString()} <span className="text-xs text-slate-500">/40kg</span>
-              </p>
-            </div>
-            <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
-              <span className="text-[11px] font-bold text-slate-500 block uppercase">
-                {isUrdu ? 'آج کا خالص اوسط نفع فی کلو' : 'Today\'s Net Margin per Kg'}
-              </span>
-              <p className="text-xl font-black text-emerald-800 font-mono mt-1">
-                Rs {(todayMandiMarginSpread / 40).toFixed(2)} / kg
-              </p>
+            {/* Profit breakdown — purchase saving + sale margin + charges.
+                Mandi rate is a reference here, never the cost basis. */}
+            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs space-y-1">
+              <div className="flex justify-between font-bold text-emerald-950">
+                <span>{isUrdu ? 'آج کا کل منافع (اصل خرید لاگت پر):' : 'Today\'s total profit (on actual purchase cost):'}</span>
+                <span className="font-mono">Rs {estimatedProfitToday.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-slate-700">
+                <span>{isUrdu ? 'خرید بچت (منڈی − خرید):' : 'Purchase saving (mandi − purchase):'}</span>
+                <span className="font-mono">Rs {todayPurchaseSaving.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-slate-700">
+                <span>{isUrdu ? 'سیل مارجن (سیل − منڈی):' : 'Sale margin (sale − mandi):'}</span>
+                <span className="font-mono">Rs {todaySaleMargin.toLocaleString()}</span>
+              </div>
+              {todayProfitCharges > 0 && (
+                <div className="flex justify-between text-slate-700">
+                  <span>{isUrdu ? 'اضافی چارجز:' : 'Extra charges:'}</span>
+                  <span className="font-mono">Rs {todayProfitCharges.toLocaleString()}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-slate-500">
+                <span>{isUrdu ? 'اسپریڈ حوالہ (سیل − منڈی):' : 'Spread reference (sale − mandi):'}</span>
+                <span className="font-mono">Rs {todayMandiMarginSpread.toLocaleString()} / 40kg</span>
+              </div>
+              {todayProfitIsEstimate && (
+                <p className="text-amber-700 font-bold pt-1">
+                  {isUrdu
+                    ? 'نوٹ: کچھ فروخت کا کوئی خرید ریکارڈ نہیں — اس حصے کی لاگت منڈی ریٹ سے لگائی گئی ہے (تخمینہ)۔'
+                    : 'Note: some sales have no purchase record — that part is costed at the mandi rate (estimate).'}
+                </p>
+              )}
             </div>
           </div>
         )}

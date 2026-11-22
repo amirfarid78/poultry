@@ -307,7 +307,7 @@ export function generateLedgerWhatsAppUrl(data: {
   return `https://wa.me/${normPhone}?text=${encodeURIComponent(message)}`;
 }
 
-import type { Invoice, ReceiptVoucher } from '../types';
+import type { Invoice, Purchase, ReceiptVoucher } from '../types';
 
 export interface TodayKpis {
   todaySalesAmount: number;
@@ -347,4 +347,184 @@ export function computeTodayKpis(
         .reduce((s, r) => s + (r.amount || 0), 0) +
       todayInvoices.reduce((s, inv) => s + (inv.receivedCash || 0) + (inv.receivedAC || 0), 0),
   };
+}
+
+export interface FifoInvoiceProfit {
+  invoiceId: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  kg: number;
+  revenue: number; // totalAmount (bird value + extra charges)
+  birdRevenue: number; // totalAmount - chargesTotal
+  charges: number; // extra charges (labour/loading) — service income, no purchase cost
+  cogs: number; // FIFO purchase cost of the kg sold (rounded Rs)
+  profit: number; // revenue - cogs
+  purchaseSaving: number; // (mandi - purchase) x kg / 40 — buying below mandi
+  saleMargin: number; // (sale - mandi) x kg / 40 — selling above mandi
+  estimatedKg: number; // kg with no purchase history, costed at the mandi proxy
+  isEstimate: boolean;
+}
+
+export interface FifoProfitTotals {
+  revenue: number;
+  cogs: number;
+  profit: number;
+  purchaseSaving: number;
+  saleMargin: number;
+  charges: number;
+  soldKg: number;
+  estimatedKg: number;
+  isEstimate: boolean;
+}
+
+export interface FifoClosingStock {
+  kg: number; // kg left in purchase lots (unsold)
+  value: number; // at lot purchase costs (rounded Rs)
+  avgCostPerKg: number; // 0 when no lots remain
+}
+
+export interface FifoProfitResult {
+  perInvoice: FifoInvoiceProfit[];
+  totals: FifoProfitTotals;
+  closingStock: FifoClosingStock;
+}
+
+/**
+ * TRUE profit on ACTUAL purchase cost, allocated FIFO (oldest purchase
+ * lot first). The mandi rate is a reference only — never the cost basis.
+ *
+ * For each non-void invoice, in chronological order, the kg sold is drawn
+ * from the oldest purchase lot bought on or before the invoice date
+ * (same-day purchase-then-sale is allowed). Per slice:
+ *   cost           += kg x lotCostPerKg
+ *   purchaseSaving += (mandiRate - lotRate) x kg / 40   (buying below mandi)
+ *   saleMargin     += (saleRate - mandiRate) x kg / 40  (selling above mandi)
+ * so that profit = purchaseSaving + saleMargin + charges, exactly:
+ * revenue - cogs = (sale - cost) x kg / 40 + charges.
+ *
+ * Example (the user's): buy 40 kg @ Rs 12,000, mandi Rs 15,000, sell
+ * @ Rs 20,000 → cost 12,000, purchaseSaving 3,000, saleMargin 5,000,
+ * profit 8,000.
+ *
+ * Sales with NO purchase history (sold before any eligible lot, or lots
+ * run out) are costed at the invoice's own mandi rate as a proxy, with
+ * purchaseSaving 0 for that kg, and flagged isEstimate — the UI must
+ * label such profit as an estimate, never a silently invented rate.
+ * Voided invoices are excluded. Mortality is NOT in COGS (it is not a
+ * sale) — it is expensed separately via the Dr 5040 mortality JV.
+ * `liveInvoices` should already exclude voided invoices; the helper
+ * skips isVoid defensively.
+ */
+export function computeFifoProfit(
+  liveInvoices: Invoice[],
+  purchases: Purchase[]
+): FifoProfitResult {
+  interface Lot {
+    date: string;
+    createdAt: string;
+    kg: number;
+    costPerKg: number;
+    ratePer40kg: number;
+  }
+  const lots: Lot[] = (purchases ?? [])
+    .filter((p) => (p.netWeightKg || 0) > 0)
+    .map((p) => ({
+      date: p.purchaseDate || '',
+      createdAt: p.createdAt || '',
+      kg: p.netWeightKg || 0,
+      costPerKg: (p.ratePer40kg || 0) / 40,
+      ratePer40kg: p.ratePer40kg || 0,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+
+  const sales = (liveInvoices ?? [])
+    .filter((i) => !i.isVoid && (i.netWeightKg || 0) > 0)
+    .sort(
+      (a, b) =>
+        a.invoiceDate.localeCompare(b.invoiceDate) ||
+        (a.createdAt || '').localeCompare(b.createdAt || '')
+    );
+
+  // Lots are chronological; eligibleEnd only grows as invoices advance:
+  // lots[0..eligibleEnd) were bought on or before the current invoice date.
+  let lotIdx = 0;
+  let eligibleEnd = 0;
+  const perInvoice: FifoInvoiceProfit[] = [];
+
+  for (const inv of sales) {
+    const kg = inv.netWeightKg || 0;
+    const mandi = inv.mandiRatePer40kg || 0;
+    const sale = inv.saleRatePer40kg || 0;
+    const charges = inv.chargesTotal || 0;
+    const revenue = inv.totalAmount || 0;
+    while (eligibleEnd < lots.length && lots[eligibleEnd].date <= inv.invoiceDate) eligibleEnd++;
+
+    let remaining = kg;
+    let rawCogs = 0;
+    let rawSaving = 0;
+    let estimatedKg = 0;
+    while (remaining > 1e-9 && lotIdx < eligibleEnd) {
+      const lot = lots[lotIdx];
+      if (lot.kg <= 1e-9) {
+        lotIdx++;
+        continue;
+      }
+      const take = Math.min(lot.kg, remaining);
+      rawCogs += take * lot.costPerKg;
+      rawSaving += ((mandi - lot.ratePer40kg) * take) / 40;
+      lot.kg -= take;
+      remaining -= take;
+      if (lot.kg <= 1e-9) lotIdx++;
+    }
+    if (remaining > 1e-9) {
+      // No purchase history for this kg: mandi-rate proxy, no saving.
+      rawCogs += (remaining * mandi) / 40;
+      estimatedKg = remaining;
+    }
+    const cogs = Math.round(rawCogs);
+    const profit = revenue - cogs;
+    const purchaseSaving = Math.round(rawSaving);
+    // saleMargin is the remainder so saving + margin + charges == profit
+    // exactly (up to rounding) in every display.
+    const saleMargin = profit - charges - purchaseSaving;
+    perInvoice.push({
+      invoiceId: inv.id,
+      invoiceNumber: inv.invoiceNumber,
+      invoiceDate: inv.invoiceDate,
+      kg,
+      revenue,
+      birdRevenue: revenue - charges,
+      charges,
+      cogs,
+      profit,
+      purchaseSaving,
+      saleMargin,
+      estimatedKg,
+      isEstimate: estimatedKg > 0,
+    });
+  }
+
+  const totals: FifoProfitTotals = {
+    revenue: perInvoice.reduce((s, r) => s + r.revenue, 0),
+    cogs: perInvoice.reduce((s, r) => s + r.cogs, 0),
+    profit: perInvoice.reduce((s, r) => s + r.profit, 0),
+    purchaseSaving: perInvoice.reduce((s, r) => s + r.purchaseSaving, 0),
+    saleMargin: perInvoice.reduce((s, r) => s + r.saleMargin, 0),
+    charges: perInvoice.reduce((s, r) => s + r.charges, 0),
+    soldKg: perInvoice.reduce((s, r) => s + r.kg, 0),
+    estimatedKg: perInvoice.reduce((s, r) => s + r.estimatedKg, 0),
+    isEstimate: perInvoice.some((r) => r.isEstimate),
+  };
+
+  const closingKg = lots.reduce((s, l) => s + Math.max(0, l.kg), 0);
+  const closingValue = Math.round(
+    lots.reduce((s, l) => s + Math.max(0, l.kg) * l.costPerKg, 0)
+  );
+  const closingStock: FifoClosingStock = {
+    kg: closingKg,
+    value: closingValue,
+    avgCostPerKg: closingKg > 0 ? closingValue / closingKg : 0,
+  };
+
+  return { perInvoice, totals, closingStock };
 }

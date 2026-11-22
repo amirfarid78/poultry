@@ -1865,6 +1865,7 @@ function AppShell() {
             currentRole={role}
             language={appState.language}
             expenses={appState.expenses}
+            purchases={appState.purchases}
             onNavigateTab={goToTab}
             onOpenReceiptModal={(partyId) => {
               setReceiptPreselectedPartyId(partyId);
