@@ -35,9 +35,13 @@ export interface OutboxEntry {
 
 /**
  * Consecutive replay failures before an entry is quarantined as dead.
- * At the 30s sync tick this is ~4 minutes of continuous failure.
+ * At the 30s sync tick this is ~12 minutes of continuous failure. 8 was too
+ * small: a phone that is "online" but unreachable (dead zone, captive
+ * portal) burned through it in ~4 minutes and quarantined legit entries.
+ * The engine continues past failures either way, so a longer fuse only
+ * delays the manual-retry surfacing — it never wedges the queue.
  */
-export const MAX_SYNC_ATTEMPTS = 8;
+export const MAX_SYNC_ATTEMPTS = 24;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -93,6 +97,10 @@ let dbPromise: Promise<IDBPDatabase<MmDb>> | null = null;
 
 function getDb(): Promise<IDBPDatabase<MmDb>> {
   if (!dbPromise) {
+    // A single transient open failure used to poison the whole session:
+    // the rejected promise was cached forever, so every later sync/refresh
+    // call failed with no retry. Reset on rejection so the next call tries
+    // to open IndexedDB again.
     dbPromise = openDB<MmDb>(DB_NAME, DB_VERSION, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('mm_outbox')) {
@@ -103,6 +111,9 @@ function getDb(): Promise<IDBPDatabase<MmDb>> {
           db.createObjectStore('mm_cache', { keyPath: 'key' });
         }
       },
+    }).catch((e) => {
+      dbPromise = null;
+      throw e;
     });
   }
   return dbPromise;

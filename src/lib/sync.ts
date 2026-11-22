@@ -14,8 +14,11 @@
 //     document (invoices, receipts, orders, purchases) in one transaction.
 //     Plain deletes can't do this — RLS forbids hard-deleting invoices and
 //     receipts — so the RPC owns it, like the void RPCs below.
-//   * journal_entries -> insertJournalEntry; a duplicate-key error means the
-//     entry already exists, so it is treated as already synced and dropped.
+//   * journal_entries -> insertJournalEntry, which owns the duplicate-key
+//     semantics: a replay of an entry that already landed returns normally,
+//     while a voucher_number collision with a different entry throws a
+//     plain error so it surfaces as failed instead of being silently
+//     dropped (dropping a collision loses the whole entry on refresh).
 //   * One failing entry does NOT stop the run: attempts/last_error are
 //     recorded and the engine continues with the rest.
 //   * An entry failing MAX_SYNC_ATTEMPTS times in a row is quarantined
@@ -83,9 +86,6 @@ const SYNC_INTERVAL_MS = 30_000;
 
 const errMsg = (e: unknown): string =>
   e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e);
-
-const isDuplicateKey = (e: unknown): boolean =>
-  /duplicate key|already exists|unique constraint|23505/i.test(errMsg(e));
 
 const strOrNull = (v: unknown): string | null =>
   typeof v === 'string' && v ? v : null;
@@ -242,8 +242,13 @@ async function replayOne(
     return true;
   }
 
-  // journal_entries needs account-code resolution + line inserts; a
-  // duplicate-key failure means "already synced" -> drop the entry.
+  // journal_entries needs account-code resolution + line inserts.
+  // insertJournalEntry owns the duplicate-key semantics: a replay of an
+  // entry that already landed returns normally (safe to drop), while a
+  // voucher_number collision with a DIFFERENT entry throws a plain error
+  // (NOT a duplicate-key error) so the entry surfaces as failed instead of
+  // being silently dropped — dropping a collision loses the whole entry on
+  // the next refresh.
   if (table === 'journal_entries') {
     if (entry.op === 'delete') {
       const id = (entry.payload as { id?: string }).id;
@@ -262,12 +267,7 @@ async function replayOne(
     const je =
       (entry.payload as { entry?: GeneralJournalEntry }).entry ??
       (entry.payload as unknown as GeneralJournalEntry);
-    try {
-      await insertJournalEntry(db, je);
-    } catch (e) {
-      if (isDuplicateKey(e)) return true;
-      throw e;
-    }
+    await insertJournalEntry(db, je);
     return true;
   }
 
@@ -282,9 +282,13 @@ async function replayOne(
 
   if (entry.op === 'update') {
     const { id, ...rest } = row;
-    // Strip null/undefined so partial updates never wipe columns.
+    // Strip ONLY undefined (absent fields in a partial update). null means
+    // "clear this field" and must reach the server: stripping nulls made
+    // every cleared phone/address/note silently resurrect on the next
+    // refresh, because the server kept the old value. The row mappers emit
+    // undefined (not null) for absent fields, so partial updates stay safe.
     const cleaned = Object.fromEntries(
-      Object.entries(rest).filter(([, v]) => v !== undefined && v !== null)
+      Object.entries(rest).filter(([, v]) => v !== undefined)
     );
     const { error } = await db.from(table).update(cleaned).eq('id', id);
     if (error) throw error;

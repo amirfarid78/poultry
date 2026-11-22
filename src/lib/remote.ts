@@ -20,20 +20,32 @@ export function withUuid<T extends { id: string }>(doc: T): T {
 /**
  * Queue a write for background sync and kick the engine (no-op when offline).
  * Never throws — local state is always the fallback.
+ *
+ * A transient enqueue failure (e.g. IndexedDB locked by another tab) used
+ * to lose the change outright: it lived only in localStorage and the next
+ * refresh overwrote it with server state. Retry twice with a short delay
+ * before surfacing it — most IDB hiccups clear within a second.
  */
 export async function persist(
   op: OutboxOp,
   table: OutboxTable,
   payload: any
 ): Promise<void> {
-  try {
-    await enqueueWrite(op, table, payload);
-    getSyncEngine()?.syncNow().catch(() => {});
-  } catch {
-    /* IndexedDB unavailable: the change is saved in localStorage only and
-       will never reach the server. Surface it instead of failing silently. */
-    noteSyncProblem('Could not queue this change for sync — it is saved on this device only.');
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await enqueueWrite(op, table, payload);
+      getSyncEngine()?.syncNow().catch(() => {});
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
   }
+  // IndexedDB unavailable: the change is saved in localStorage only and
+  // will never reach the server. Surface it instead of failing silently.
+  console.error('persist: could not queue change for sync', lastErr);
+  noteSyncProblem('Could not queue this change for sync — it is saved on this device only.');
 }
 
 /** Only sync docs that can exist server-side (skip local demo/seed ids). */

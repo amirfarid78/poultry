@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Party, Purchase, LedgerEntry, UserRole } from '../../types';
 import { formatPKR } from '../../utils/calculations';
+import { nextDocNumber } from '../../utils/docNumbers';
 import { PartyModal } from '../common/PartyModal';
 import { LedgerFilterBar } from '../ledger/LedgerFilterBar';
 import { LedgerPrintModal } from '../ledger/LedgerPrintModal';
@@ -91,7 +92,7 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
 
     const newPurchase: Purchase = {
       id: `pur-${Date.now()}`,
-      purchaseNumber: `PUR-${100 + purchases.length + 1}`,
+      purchaseNumber: nextDocNumber('PUR', purchases.map((p) => p.purchaseNumber), 100),
       purchaseDate: new Date().toISOString().split('T')[0],
       supplierId: selectedSupplier.id,
       supplierName: selectedSupplier.name,

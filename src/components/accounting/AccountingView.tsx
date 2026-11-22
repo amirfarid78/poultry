@@ -11,6 +11,7 @@ import {
   GeneralJournalEntry 
 } from '../../types';
 import { formatPKR } from '../../utils/calculations';
+import { nextDocNumber } from '../../utils/docNumbers';
 import { 
   DollarSign, 
   Lock, 
@@ -117,9 +118,12 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     const creditAcc = accounts.find(a => a.code === jCreditCode) || { name: 'Credit Account', urduName: 'کریڈٹ کھاتہ' };
     const party = parties.find(p => p.id === jPartyId);
 
+    // Sequential max+1, never random: voucher_number is UNIQUE, and the old
+    // random 200–999 scheme collided often — worse, a collision was treated
+    // as "already synced" and the entry was silently dropped.
     const newEntry: GeneralJournalEntry = {
       id: `gen-${Date.now()}`,
-      entryNumber: `JV-${Math.floor(200 + Math.random() * 800)}`,
+      entryNumber: nextDocNumber('JV', generalEntries.map((g) => g.entryNumber), 200),
       entryDate: jEntryDate,
       description: jDescEn || jDescUrdu || 'Journal Adjustment Entry',
       descriptionUrdu: jDescUrdu || jDescEn || 'روزنامچہ جنرل اینٹری / کھاتہ ایڈجسٹمنٹ',

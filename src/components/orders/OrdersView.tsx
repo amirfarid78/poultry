@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Party, OrderItem, Vehicle, OrderStatus, UserRole, StaffProfile } from '../../types';
+import { nextDocNumber } from '../../utils/docNumbers';
 import { ClipboardList, Plus, Check, Printer, ArrowRight, Pencil, Trash2, X, User } from 'lucide-react';
 
 interface OrdersViewProps {
@@ -105,7 +106,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     } else {
       const newOrder: OrderItem = {
         id: `ord-${Date.now()}`,
-        orderNumber: `ORD-${700 + orders.length + 1}`,
+        orderNumber: nextDocNumber('ORD', orders.map((o) => o.orderNumber), 700),
         orderDate: new Date().toISOString().split('T')[0],
         customerId: cust.id,
         customerName: cust.name,

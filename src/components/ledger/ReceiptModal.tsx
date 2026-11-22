@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { Party, ReceiptVoucher, PaymentMode } from '../../types';
 import { formatPKR } from '../../utils/calculations';
+import { nextDocNumber } from '../../utils/docNumbers';
 import { Receipt, X, CheckCircle, CreditCard, Banknote, Building } from 'lucide-react';
 
 interface ReceiptModalProps {
   isOpen: boolean;
   onClose: () => void;
   parties: Party[];
+  receipts?: ReceiptVoucher[];
   preselectedPartyId?: string;
   onSaveReceipt: (receipt: ReceiptVoucher) => void;
   language: 'en' | 'ur';
@@ -16,6 +18,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   isOpen,
   onClose,
   parties,
+  receipts = [],
   preselectedPartyId,
   onSaveReceipt,
   language
@@ -44,7 +47,10 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     e.preventDefault();
     if (!selectedParty || amount <= 0) return;
 
-    const receiptNo = `REC-${Math.floor(1000 + Math.random() * 9000)}`;
+    // Sequential max+1, never random: receipt_number is UNIQUE, and the old
+    // random 1000–9999 scheme collided by birthday paradox — the colliding
+    // receipt then failed replay forever (retry can never fix a duplicate).
+    const receiptNo = nextDocNumber('REC', receipts.map((r) => r.receiptNumber), 1000);
     const token = `tok-rec-${Date.now().toString(36)}`;
 
     const newReceipt: ReceiptVoucher = {

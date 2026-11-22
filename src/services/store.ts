@@ -936,6 +936,13 @@ export function loadSavedState(): AppState {
         afterCount < beforeCount
           ? scrubSeedAccounts(parsed.accounts ?? [])
           : ((parsed.accounts ?? []) as AccountItem[]);
+      // The seed's demo mandi rate (12000) is not a row, so the scrub above
+      // never touches it: reset it too when contamination is proven, or the
+      // dashboard keeps showing the demo rate until a refresh lands.
+      const todayMandiRate =
+        afterCount < beforeCount && parsed.todayMandiRate === 12000
+          ? 0
+          : (parsed.todayMandiRate ?? 0);
       // The seed day-closing (id 'close-1', 2024-10-07, Rs 840,000 cash) is
       // not a real closing: drop it so the dashboard never shows demo money.
       const dayClosing =
@@ -945,7 +952,7 @@ export function loadSavedState(): AppState {
       return {
         currentRole: parsed.currentRole ?? 'owner',
         language: parsed.language ?? 'ur',
-        todayMandiRate: parsed.todayMandiRate ?? 0,
+        todayMandiRate,
         parties,
         invoices,
         receipts,

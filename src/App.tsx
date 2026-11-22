@@ -46,6 +46,7 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Login } from './components/auth/Login';
 import { Signup } from './components/auth/Signup';
 import { DEFAULT_TAB, canView } from './lib/permissions';
+import { nextDocNumber } from './utils/docNumbers';
 import { fetchPublicInvoice } from './lib/publicInvoice';
 
 // Supabase data + offline sync
@@ -157,9 +158,10 @@ function AppShell() {
       stateRef.current = next;
       setAppState(next);
       void snapshotState(next).catch(() => {});
-    } catch {
+    } catch (e) {
       /* keep local state; will retry on next sync tick — but say so: a
          refresh that fails silently is how stale/demo data stays on screen */
+      console.error('refreshFromServer failed:', e);
       noteSyncProblem('Could not refresh from the server — showing the last saved data on this device.');
     }
   }, [session]);
@@ -169,7 +171,13 @@ function AppShell() {
     if (session && profile) void refreshFromServer();
   }, [session, profile, refreshFromServer]);
 
-  // Start the offline outbox engine; refresh after each successful drain.
+  // Start the offline outbox engine; refresh after each successful sync run.
+  // NOTE: the refresh used to be gated on pendingCount === 0 ("drain first").
+  // That stalled ALL server refreshes for the whole session whenever the
+  // queue could not drain — e.g. a void-chained reissue waiting on a dead
+  // void — so data from other devices never appeared. reconcileState already
+  // shields pending writes, so refreshing with a non-empty queue is safe
+  // and is what keeps the 30s poll working.
   const lastSyncAtRef = React.useRef<string | null>(null);
   useEffect(() => {
     if (!session) return;
@@ -178,8 +186,7 @@ function AppShell() {
       if (
         !s.isSyncing &&
         s.lastSyncAt &&
-        s.lastSyncAt !== lastSyncAtRef.current &&
-        s.pendingCount === 0
+        s.lastSyncAt !== lastSyncAtRef.current
       ) {
         lastSyncAtRef.current = s.lastSyncAt;
         void refreshFromServer();
@@ -1087,7 +1094,7 @@ function AppShell() {
     const todayStr = new Date().toISOString().split('T')[0];
     const newExpense: ExpenseItem = withUuid({
       id: '',
-      expenseNumber: `EXP-${100 + s.expenses.length + 1}`,
+      expenseNumber: nextDocNumber('EXP', s.expenses.map((e) => e.expenseNumber), 100),
       date: todayStr,
       category: 'labor',
       categoryName: 'Staff Advance & Payroll',
@@ -1352,7 +1359,21 @@ function AppShell() {
       totalCollections: 0,
       isLocked: false,
     } as DayClosing);
-    for (const item of stateRef.current.inventory) {
+    // Persist the FRESH inventory (broiler set to the starting stock), not
+    // stateRef.current.inventory: the ref still holds the pre-setup values
+    // (the setAppState updater above hasn't committed yet), so the old code
+    // synced the OLD stock and the next refresh reverted the whole setup.
+    const freshInventory = stateRef.current.inventory.map((inv) => {
+      if (inv.category === 'broiler' && inv.id === 'inv-item-1') {
+        return {
+          ...inv,
+          currentWeightKg: config.startingStockKg,
+          currentCount: Math.round(config.startingStockKg / 2),
+        };
+      }
+      return inv;
+    });
+    for (const item of freshInventory) {
       void persist('upsert', 'products', item);
     }
     void persist('insert', 'mandi_rates', {
@@ -1688,6 +1709,7 @@ function AppShell() {
           setReceiptPreselectedPartyId(undefined);
         }}
         parties={appState.parties}
+        receipts={appState.receipts}
         preselectedPartyId={receiptPreselectedPartyId}
         onSaveReceipt={handleSaveReceipt}
         language={appState.language}

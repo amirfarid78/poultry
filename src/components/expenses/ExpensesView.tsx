@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ExpenseItem, ExpenseCategory, Vehicle, PaymentMode, UserRole } from '../../types';
 import { formatPKR } from '../../utils/calculations';
+import { nextDocNumber } from '../../utils/docNumbers';
 import { 
   Receipt, 
   Plus, 
@@ -76,7 +77,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     const catObj = categories.find(c => c.id === expCategory);
     const newExpense: ExpenseItem = {
       id: `exp-${Date.now()}`,
-      expenseNumber: `EXP-${100 + expenses.length + 1}`,
+      expenseNumber: nextDocNumber('EXP', expenses.map((e) => e.expenseNumber), 100),
       date: new Date().toISOString().split('T')[0],
       category: expCategory,
       categoryName: catObj?.nameEn || 'General',

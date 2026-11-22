@@ -73,6 +73,20 @@ const isUuid = (v: unknown): v is string =>
 const uuidOrUndefined = (v: unknown): string | undefined =>
   isUuid(v) ? v : undefined;
 
+/**
+ * Absent (undefined) stays undefined so a partial update never touches the
+ * column; an explicitly empty value becomes null so a cleared field syncs.
+ * Plain `x || null` conflates the two: partial updates would wipe columns,
+ * or (with nulls stripped in replay) cleared values resurrect on refresh.
+ * Used only by the mappers reachable via the outbox 'update' op.
+ */
+const nullIfCleared = (v: unknown): string | null | undefined =>
+  v === undefined ? undefined : v === null || v === '' ? null : String(v);
+
+/** Same as nullIfCleared for a UUID foreign key: cleared -> null, absent -> undefined. */
+const uuidOrNull = (v: unknown): string | null | undefined =>
+  v === undefined ? undefined : isUuid(v) ? (v as string) : null;
+
 // ---------------------------------------------------------------------------
 // App-only auxiliary types (no 1:1 row in src/types/index.ts)
 // ---------------------------------------------------------------------------
@@ -479,7 +493,7 @@ export async function fetchParties(db: Db): Promise<Party[]> {
   return (data as Row[]).map(mapParty);
 }
 
-export async function fetchInvoices(db: Db, limit = 1000): Promise<Invoice[]> {
+export async function fetchInvoices(db: Db, limit = 2000): Promise<Invoice[]> {
   const { data, error } = await db
     .from('invoices')
     .select('*, customer:parties!invoices_customer_id_fkey(name,urdu_name)')
@@ -500,7 +514,7 @@ export async function fetchInvoiceById(db: Db, id: string): Promise<Invoice | nu
   return data ? mapInvoice(data as Row) : null;
 }
 
-export async function fetchReceipts(db: Db, limit = 1000): Promise<ReceiptVoucher[]> {
+export async function fetchReceipts(db: Db, limit = 2000): Promise<ReceiptVoucher[]> {
   const { data, error } = await db
     .from('receipts')
     .select('*')
@@ -517,7 +531,7 @@ export async function fetchReceiptById(db: Db, id: string): Promise<ReceiptVouch
   return data ? mapReceipt(data as Row) : null;
 }
 
-export async function fetchPurchases(db: Db, limit = 1000): Promise<Purchase[]> {
+export async function fetchPurchases(db: Db, limit = 2000): Promise<Purchase[]> {
   const { data, error } = await db
     .from('purchases')
     .select('*, supplier:parties!purchases_supplier_id_fkey(name,urdu_name)')
@@ -528,7 +542,7 @@ export async function fetchPurchases(db: Db, limit = 1000): Promise<Purchase[]> 
   return (data as Row[]).map(mapPurchase);
 }
 
-export async function fetchExpenses(db: Db, limit = 1000): Promise<ExpenseItem[]> {
+export async function fetchExpenses(db: Db, limit = 2000): Promise<ExpenseItem[]> {
   const { data, error } = await db
     .from('expenses')
     .select('*')
@@ -540,7 +554,7 @@ export async function fetchExpenses(db: Db, limit = 1000): Promise<ExpenseItem[]
 }
 
 /** Read-only. Client never writes ledger_entries; triggers own them. */
-export async function fetchLedgerEntries(db: Db, limit = 2000): Promise<LedgerEntry[]> {
+export async function fetchLedgerEntries(db: Db, limit = 5000): Promise<LedgerEntry[]> {
   const { data, error } = await db
     .from('ledger_entries')
     .select('*, party:parties!ledger_entries_party_id_fkey(party_type)')
@@ -612,7 +626,7 @@ export async function fetchVehicles(db: Db): Promise<Vehicle[]> {
   return vehicles.map((v) => mapVehicle(v, latest.get(str(v.id))));
 }
 
-export async function fetchTrips(db: Db, limit = 50): Promise<Trip[]> {
+export async function fetchTrips(db: Db, limit = 100): Promise<Trip[]> {
   const { data, error } = await db
     .from('trips')
     .select(
@@ -720,7 +734,7 @@ export async function deleteUserInvite(db: Db, inviteId: string): Promise<void> 
   if (error) throw error;
 }
 
-export async function fetchOrders(db: Db, limit = 1000): Promise<OrderItem[]> {
+export async function fetchOrders(db: Db, limit = 2000): Promise<OrderItem[]> {
   const { data, error } = await db
     .from('orders')
     .select(
@@ -759,7 +773,7 @@ export async function fetchAccounts(db: Db): Promise<AccountItem[]> {
   return (data as Row[]).map(mapAccount);
 }
 
-export async function fetchJournalEntries(db: Db, limit = 500): Promise<GeneralJournalEntry[]> {
+export async function fetchJournalEntries(db: Db, limit = 1000): Promise<GeneralJournalEntry[]> {
   const { data, error } = await db
     .from('journal_entries')
     .select(
@@ -927,17 +941,17 @@ function rowParty(p: Party): Row {
     id: p.id,
     party_type: p.partyType,
     name: p.name,
-    urdu_name: p.urduName || null,
-    phone: p.phone || null,
-    whatsapp: p.whatsapp || null,
-    address: p.address || null,
+    urdu_name: nullIfCleared(p.urduName),
+    phone: nullIfCleared(p.phone),
+    whatsapp: nullIfCleared(p.whatsapp),
+    address: nullIfCleared(p.address),
     city: p.city || 'Lahore',
     opening_balance: p.openingBalance,
     current_balance: p.currentBalance,
     credit_limit: p.creditLimit,
     default_kilo: p.defaultKilo,
-    cnic: p.cnic || null,
-    ntn: p.ntn || null,
+    cnic: nullIfCleared(p.cnic),
+    ntn: nullIfCleared(p.ntn),
   };
 }
 
@@ -1032,12 +1046,12 @@ function rowOrder(o: OrderItem): Row {
     customer_id: o.customerId,
     booker_id: uuidOrUndefined(o.bookerId),
     expected_kg: o.expectedKg,
-    expected_bird_count: o.expectedBirdCount ?? null,
+    expected_bird_count: o.expectedBirdCount ?? undefined,
     quoted_rate_per_40kg: o.quotedRatePer40kg,
-    delivery_time_slot: o.deliverySlot || null,
-    delivery_route: o.deliveryRoute || null,
+    delivery_time_slot: nullIfCleared(o.deliverySlot),
+    delivery_route: nullIfCleared(o.deliveryRoute),
     status: o.status,
-    special_notes: o.specialNotes || null,
+    special_notes: nullIfCleared(o.specialNotes),
   };
 }
 
@@ -1178,14 +1192,14 @@ function rowVehicle(v: Vehicle): Row {
     model: v.model,
     capacity_kg: optNum(v.capacityKg),
     is_active: v.isActive,
-    driver_id: v.driverId || null,
-    driver_name: v.driverName || null,
-    year: v.year || null,
-    color: v.color || null,
-    engine_number: v.engineNumber || null,
-    chassis_number: v.chassisNumber || null,
-    insurance_expiry: v.insuranceExpiry || null,
-    fitness_expiry: v.fitnessExpiry || null,
+    driver_id: uuidOrNull(v.driverId),
+    driver_name: nullIfCleared(v.driverName),
+    year: v.year === undefined ? undefined : v.year || null,
+    color: nullIfCleared(v.color),
+    engine_number: nullIfCleared(v.engineNumber),
+    chassis_number: nullIfCleared(v.chassisNumber),
+    insurance_expiry: nullIfCleared(v.insuranceExpiry),
+    fitness_expiry: nullIfCleared(v.fitnessExpiry),
   };
 }
 
@@ -1200,8 +1214,8 @@ function rowTrip(t: Trip): Row {
     vehicle_id: uuidOrUndefined(t.vehicleId),
     driver_id: uuidOrUndefined(t.driverId),
     status: t.status,
-    start_time: t.startTime || undefined,
-    end_time: t.endTime || undefined,
+    start_time: t.startTime === undefined ? undefined : t.startTime || null,
+    end_time: t.endTime === undefined ? undefined : t.endTime || null,
     fuel_expense: optNum(t.fuelExpense),
     total_load_kg: total,
     shortage_kg:
@@ -1216,10 +1230,10 @@ function rowEmployee(e: Employee): Row {
     id: e.id,
     employee_code: e.code,
     name: e.name,
-    urdu_name: e.urduName || undefined,
+    urdu_name: e.urduName === undefined ? undefined : e.urduName || null,
     role: e.role,
     phone: e.phone,
-    cnic: e.cnic || undefined,
+    cnic: e.cnic === undefined ? undefined : e.cnic || null,
     monthly_salary: optNum(e.monthlySalary),
     advance_balance: optNum(e.advanceBalance),
     joining_date: e.joiningDate || undefined,
@@ -1424,15 +1438,39 @@ export async function upsertDayClosing(db: Db, closing: DayClosing): Promise<Day
 
 /**
  * Inserts a journal entry with its debit/credit lines. Account ids are
- * resolved from chart_of_accounts by code. Idempotency: voucher_number is
- * UNIQUE — replays that hit a duplicate key should be treated as already
- * synced (see sync.ts).
+ * resolved from chart_of_accounts by code.
+ *
+ * Idempotency: a replay of an entry that already landed returns normally
+ * (the row is found by id and the lines are backfilled only if missing —
+ * a transient failure between the row insert and the lines insert used to
+ * leave a lineless entry behind). A voucher_number collision with a
+ * DIFFERENT entry throws a plain error (not a duplicate-key error) so the
+ * sync engine surfaces it as failed instead of silently dropping the
+ * entry — dropping a collision loses the whole entry on the next refresh.
  */
 export async function insertJournalEntry(
   db: Db,
   entry: GeneralJournalEntry
 ): Promise<GeneralJournalEntry> {
-  const entryRow = await insertOne(db, 'journal_entries', rowJournalEntry(entry));
+  let entryRow: Row;
+  try {
+    entryRow = await insertOne(db, 'journal_entries', rowJournalEntry(entry));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/duplicate key|23505/i.test(msg)) throw e;
+    const { data, error } = await db
+      .from('journal_entries')
+      .select('id')
+      .eq('id', entry.id)
+      .maybeSingle();
+    if (error) throw e;
+    if (!data) {
+      throw new Error(
+        `insertJournalEntry: voucher_number ${entry.entryNumber} already belongs to another entry — change the number and retry`
+      );
+    }
+    entryRow = data as Row;
+  }
 
   const { data: accounts, error: accErr } = await db
     .from('chart_of_accounts')
@@ -1449,11 +1487,19 @@ export async function insertJournalEntry(
     );
   }
 
-  const { error: lineErr } = await db.from('journal_lines').insert([
-    { journal_entry_id: entryRow.id, account_id: debitAccountId, debit: entry.amount, credit: 0 },
-    { journal_entry_id: entryRow.id, account_id: creditAccountId, debit: 0, credit: entry.amount },
-  ]);
-  if (lineErr) throw lineErr;
+  const { data: existingLines, error: linesErr } = await db
+    .from('journal_lines')
+    .select('id')
+    .eq('journal_entry_id', entryRow.id)
+    .limit(1);
+  if (linesErr) throw linesErr;
+  if (!existingLines || existingLines.length === 0) {
+    const { error: lineErr } = await db.from('journal_lines').insert([
+      { journal_entry_id: entryRow.id, account_id: debitAccountId, debit: entry.amount, credit: 0 },
+      { journal_entry_id: entryRow.id, account_id: creditAccountId, debit: 0, credit: entry.amount },
+    ]);
+    if (lineErr) throw lineErr;
+  }
   return { ...entry, id: str(entryRow.id) };
 }
 

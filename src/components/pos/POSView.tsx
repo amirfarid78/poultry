@@ -8,11 +8,12 @@ import {
   UserRole,
   OrderItem 
 } from '../../types';
-import { 
-  calculateInvoice, 
-  formatPKR, 
-  generateInvoiceWhatsAppUrl 
+import {
+  calculateInvoice,
+  formatPKR,
+  generateInvoiceWhatsAppUrl
 } from '../../utils/calculations';
+import { nextDocNumber } from '../../utils/docNumbers';
 import { generateInvoicePDF, brandingFromSettings, loadLogoDataUrl } from '../../utils/pdfGenerator';
 import { useBusiness } from '../../context/BusinessContext';
 import { PartyModal } from '../common/PartyModal';
@@ -374,7 +375,7 @@ export const POSView: React.FC<POSViewProps> = ({
     if (!selectedCustomer) return null;
     if (saleRate <= 0 || weightKg <= 0) return null;
 
-    const nextInvNo = `INV-${2400 + invoices.length + 1}`;
+    const nextInvNo = nextDocNumber('INV', invoices.map((i) => i.invoiceNumber), 2400);
     const token = `tok-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
 
     // Keep only charge rows with a positive amount; default an empty name.
@@ -418,6 +419,13 @@ export const POSView: React.FC<POSViewProps> = ({
     };
   };
 
+  // Double-tap guard: two saves in one tick used to create two invoices
+  // with the SAME number (both read the same invoices.length) — one of them
+  // then failed the UNIQUE invoice_number check and went dead in the outbox.
+  // The lock only blocks accidental sub-1.5s repeats; intentional repeats
+  // after the form resets still work (the number is recomputed by then).
+  const saveLockRef = useRef(0);
+
   const handleSave = (shareWhatsApp = false): Invoice | null => {
     if (!selectedCustomer) return null;
 
@@ -425,6 +433,10 @@ export const POSView: React.FC<POSViewProps> = ({
       alert(isUrdu ? 'براہ کرم درست ریٹ اور وزن درج کریں' : 'Please enter valid rate and weight');
       return null;
     }
+
+    const now = Date.now();
+    if (now - saveLockRef.current < 1500) return null;
+    saveLockRef.current = now;
 
     const newInvoice = createInvoiceObject();
     if (!newInvoice) return null;
@@ -1278,7 +1290,7 @@ export const POSView: React.FC<POSViewProps> = ({
               </div>
               <div className="text-right">
                 <span className="text-xs text-slate-400">{invoiceDate}</span>
-                <p className="text-[10px] text-emerald-400 font-mono">INV-{2400 + invoices.length + 1}</p>
+                <p className="text-[10px] text-emerald-400 font-mono">{nextDocNumber('INV', invoices.map((i) => i.invoiceNumber), 2400)}</p>
               </div>
             </div>
 
