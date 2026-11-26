@@ -564,16 +564,13 @@ function AppShell() {
       return true;
     }
 
-    // Cascade delete destroys audit history — owner only (the RPC enforces
-    // this server-side too).
-    if (role !== 'owner') {
-      alert(
-        isUrdu
-          ? `”${party.urduName || party.name}“ کے کھاتے میں ریکارڈ موجود ہے — ہسٹری والا کھاتہ صرف مالک حذف کر سکتا ہے۔`
-          : `"${party.name}" has records on file — only the owner can delete an account with history.`
-      );
-      return false;
-    }
+    // Cascade delete destroys audit history. It used to be owner-only, but
+    // the shop staff hit a dead end ("only the owner can delete") when they
+    // tried to delete a khata with history — so any staff role that can open
+    // the khata now gets the same single confirm below (with the linked
+    // counts) and the cascade runs. The RPC enforces the role list
+    // server-side too (migration 20261126000001: owner/manager/accountant/
+    // cashier). Run that migration or staff deletes bounce back on refresh.
     const ok = window.confirm(
       isUrdu
         ? `”${party.urduName || party.name}“ کا کھاتہ اور اس سے جڑا تمام ریکارڈ مستقل حذف ہو جائے گا: ${linkedInvoices.length} سیل، ${linkedReceipts.length} رسیدیں، ${linkedOrders.length} آرڈر، ${linkedPurchases.length} خریداریاں اور مکمل کھاتہ۔ یہ واپس نہیں ہوگا۔ جاری رکھیں؟`

@@ -104,14 +104,18 @@ export const POSView: React.FC<POSViewProps> = ({
 
   const canModifySales = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
 
-  // Form State
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '');
+  // Form State — the form starts BLANK (no customer, no weight). The old
+  // code pre-selected customers[0] + their defaultKilo on mount and on
+  // every reset, so the next invoice silently carried the previous sale's
+  // customer/weight and a second tap double-entered it. Data now fills
+  // only when the user picks a customer (handleCustomerChange).
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [invoiceDate, setInvoiceDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [mandiRate, setMandiRate] = useState<number>(todayMandiRate ?? 0);
   const [saleRate, setSaleRate] = useState<number>(todayMandiRate > 0 ? todayMandiRate + 200 : 0);
-  const [weightKg, setWeightKg] = useState<number>(customers[0]?.defaultKilo || 0);
+  const [weightKg, setWeightKg] = useState<number>(0);
   const [shrinkageKg, setShrinkageKg] = useState<number>(0);
-  const [birdCount, setBirdCount] = useState<number>(deriveBirdCount(customers[0]?.defaultKilo || 0));
+  const [birdCount, setBirdCount] = useState<number>(0);
   const [receivedCash, setReceivedCash] = useState<number>(0);
   const [receivedAC, setReceivedAC] = useState<number>(0);
   const [acPaymentMode, setAcPaymentMode] = useState<PaymentMode>('bank_transfer');
@@ -120,7 +124,10 @@ export const POSView: React.FC<POSViewProps> = ({
   const [notes, setNotes] = useState<string>('');
   // Extra charges on this invoice: labour, loading, transport, or manually named.
   const [charges, setCharges] = useState<InvoiceCharge[]>([]);
-  const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
+  // The invoice just saved — shown in the success popup (Preview / Print)
+  // until the user dismisses it, so the next sale can never start on the
+  // previous sale's data. Replaces the old 5-second banner nobody saw.
+  const [successInvoice, setSuccessInvoice] = useState<Invoice | null>(null);
   const [isAddPartyModalOpen, setIsAddPartyModalOpen] = useState(false);
   // Sale being edited (void + reissue flow). Null = creating a new sale.
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
@@ -148,13 +155,14 @@ export const POSView: React.FC<POSViewProps> = ({
   };
 
   const resetSaleForm = () => {
-    setSelectedCustomerId(customers[0]?.id || '');
+    // Blank slate: no customer, no weight. Rates follow today's mandi rate.
+    setSelectedCustomerId('');
     setInvoiceDate(new Date().toISOString().split('T')[0]);
     setMandiRate(todayMandiRate ?? 0);
     setSaleRate(todayMandiRate > 0 ? todayMandiRate + 200 : 0);
-    setWeightKg(customers[0]?.defaultKilo || 0);
+    setWeightKg(0);
     setShrinkageKg(0);
-    setBirdCount(deriveBirdCount(customers[0]?.defaultKilo || 0));
+    setBirdCount(0);
     setReceivedCash(0);
     setReceivedAC(0);
     setAcRefNo('');
@@ -250,7 +258,10 @@ export const POSView: React.FC<POSViewProps> = ({
     acRefNo: useRef<HTMLInputElement>(null),
   };
 
-  const selectedCustomer = parties.find((p) => p.id === selectedCustomerId) || customers[0];
+  // No fallback to customers[0]: a blank selection must mean "no customer"
+  // (the old `|| customers[0]` silently saved every blank form against the
+  // first customer — the other half of the double-entry bug).
+  const selectedCustomer = parties.find((p) => p.id === selectedCustomerId);
 
   // Weight change always re-derives bird count (2 kg/bird); the bird-count
   // input stays editable and a manual bird edit holds until next weight change.
@@ -504,7 +515,10 @@ export const POSView: React.FC<POSViewProps> = ({
   const saveLockRef = useRef(0);
 
   const handleSave = (shareWhatsApp = false): Invoice | null => {
-    if (!selectedCustomer) return null;
+    if (!selectedCustomer) {
+      alert(isUrdu ? 'براہ کرم پہلے گاہک منتخب کریں' : 'Please select a customer first');
+      return null;
+    }
 
     if (saleRate <= 0 || weightKg <= 0) {
       alert(isUrdu ? 'براہ کرم درست ریٹ اور وزن درج کریں' : 'Please enter valid rate and weight');
@@ -551,14 +565,10 @@ export const POSView: React.FC<POSViewProps> = ({
       };
       const old = editingInvoice;
       onUpdateInvoice(old, updated);
-      setSaveSuccessNotice(
-        isUrdu
-          ? `بل ${old.invoiceNumber} وائڈ کر کے نیا بل ${updated.invoiceNumber} جاری کر دیا گیا!`
-          : `Invoice ${old.invoiceNumber} voided — corrected invoice ${updated.invoiceNumber} issued!`
-      );
-      setTimeout(() => setSaveSuccessNotice(null), 5000);
+      // Blank form + success popup (the popup gates the next sale).
       resetSaleForm();
       if (onClearPrefillOrder) onClearPrefillOrder();
+      setSuccessInvoice(updated);
       return updated;
     }
 
@@ -567,12 +577,10 @@ export const POSView: React.FC<POSViewProps> = ({
       onClearPrefillOrder();
     }
 
-    setSaveSuccessNotice(
-      isUrdu 
-        ? `انوائس ${newInvoice.invoiceNumber} کامیابی سے محفوظ ہوگئی! نیا بقایا: Rs ${calc.newBalance.toLocaleString()}`
-        : `Invoice ${newInvoice.invoiceNumber} saved successfully! New Balance: Rs ${calc.newBalance.toLocaleString()}`
-    );
-    setTimeout(() => setSaveSuccessNotice(null), 5000);
+    // Blank form + success popup: the popup gates the next sale, so the
+    // previous invoice's customer/weight can never silently re-save.
+    resetSaleForm();
+    setSuccessInvoice(newInvoice);
 
     if (shareWhatsApp && selectedCustomer.whatsapp) {
       const shareUrl = window.location.origin + `?token=${newInvoice.shareToken}&type=invoice`;
@@ -596,12 +604,6 @@ export const POSView: React.FC<POSViewProps> = ({
       });
       window.open(waUrl, '_blank');
     }
-
-    // Reset received amounts for next invoice, keep rates
-    setReceivedCash(0);
-    setReceivedAC(0);
-    setAcRefNo('');
-    setCharges([]);
 
     return newInvoice;
   };
@@ -719,19 +721,50 @@ export const POSView: React.FC<POSViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Success Notification */}
-      {saveSuccessNotice && (
-        <div className="bg-emerald-600 text-white p-3.5 rounded-xl shadow-lg flex items-center justify-between animate-in fade-in">
-          <div className="flex items-center gap-2 font-medium text-sm">
-            <CheckCircle className="w-5 h-5 text-emerald-200" />
-            <span>{saveSuccessNotice}</span>
+      {/* Success Popup — shows after every save (create + edit). Preview
+          opens the print slip (Print / PDF / WhatsApp live inside it);
+          New Invoice closes it onto a BLANK form, so the saved sale can
+          never silently re-save as a double entry. */}
+      {successInvoice && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in fade-in zoom-in-95">
+            <div className="p-5 text-center">
+              <div className="mx-auto w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center mb-3">
+                <CheckCircle className="w-8 h-8 text-emerald-600" />
+              </div>
+              <h3 className="text-lg font-extrabold text-slate-900">
+                {isUrdu ? 'انوائس کامیابی سے محفوظ ہوگئی!' : 'Invoice saved successfully!'}
+              </h3>
+              <p className="text-sm text-slate-600 mt-1">
+                {successInvoice.invoiceNumber} — {successInvoice.customerUrduName || successInvoice.customerName}
+              </p>
+              <div className="mt-3 bg-slate-50 rounded-xl p-3 text-sm space-y-1 text-left">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">{isUrdu ? 'کل رقم' : 'Total'}</span>
+                  <span className="font-bold text-slate-900">Rs {successInvoice.totalAmount.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">{isUrdu ? 'نیا بقایا' : 'New Balance'}</span>
+                  <span className="font-bold text-slate-900">Rs {successInvoice.newBalance.toLocaleString()}</span>
+                </div>
+              </div>
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={() => setPrintModalInvoice(successInvoice)}
+                  className="flex-1 px-3 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-bold flex items-center justify-center gap-2"
+                >
+                  <Eye className="w-4 h-4" />
+                  {isUrdu ? 'پیش نظارہ / پرنٹ' : 'Preview / Print'}
+                </button>
+                <button
+                  onClick={() => setSuccessInvoice(null)}
+                  className="flex-1 px-3 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-bold"
+                >
+                  {isUrdu ? 'نئی انوائس' : 'New Invoice'}
+                </button>
+              </div>
+            </div>
           </div>
-          <button 
-            onClick={() => setSaveSuccessNotice(null)} 
-            className="text-emerald-200 hover:text-white text-xs px-2 py-1"
-          >
-            ✕
-          </button>
         </div>
       )}
 
@@ -983,6 +1016,9 @@ export const POSView: React.FC<POSViewProps> = ({
                   onChange={(e) => handleCustomerChange(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 bg-white"
                 >
+                  <option value="">
+                    {isUrdu ? '-- گاہک منتخب کریں --' : '-- Select customer --'}
+                  </option>
                   {customers.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.urduName ? `${c.urduName} (${c.name})` : c.name} — Bal: {formatPKR(c.currentBalance, true)}
@@ -2046,12 +2082,9 @@ export const POSView: React.FC<POSViewProps> = ({
           if (newParty.defaultKilo) {
             setWeightKg(newParty.defaultKilo);
           }
-          setSaveSuccessNotice(
-            isUrdu 
-              ? `نیا گاہک "${newParty.urduName || newParty.name}" کامیابی سے شامل ہو گیا!` 
-              : `Customer "${newParty.name}" added successfully!`
-          );
-          setTimeout(() => setSaveSuccessNotice(null), 4000);
+          // The dropdown visibly switches to the new customer — that is the
+          // confirmation (the old 4-second banner is gone with the invoice
+          // success popup rework).
         }}
         defaultPartyType="customer"
         language={language}

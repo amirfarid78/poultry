@@ -44,7 +44,10 @@ export const DailySheetView: React.FC<DailySheetViewProps> = ({
 }) => {
   const isUrdu = language === 'ur';
   const { settings: biz } = useBusiness();
-  const canVoidReceipt = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
+  // Voiding a receipt reverses its balance/cash effects; the receipts list
+  // shows Void to every role, so Roznamcha must too — otherwise a cashier
+  // sees no delete button here at all and the voucher "won't delete".
+  const canVoidReceipt = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant' || currentRole === 'cashier';
   const todayStr = new Date().toISOString().split('T')[0];
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [searchQuery, setSearchQuery] = useState<string>('');
