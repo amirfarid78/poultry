@@ -78,6 +78,7 @@ const TABLE_STATE_KEY: Record<string, keyof AppState> = {
   // pending edit keeps the local edited row.
   invoice_voids: 'invoices',
   receipt_voids: 'receipts',
+  purchase_voids: 'purchases',
   ledger_edits: 'ledgerEntries',
 };
 
@@ -120,7 +121,7 @@ function pendingByTable(pending: OutboxEntry[]): {
   for (const e of pending) {
     const id = outboxEntityId(e);
     if (!id) continue;
-    if (e.table === 'invoice_voids' || e.table === 'receipt_voids') {
+    if (e.table === 'invoice_voids' || e.table === 'receipt_voids' || e.table === 'purchase_voids') {
       voidRefIds.add(id);
       const key = TABLE_STATE_KEY[e.table];
       if (key) ops(key).pending.add(id);

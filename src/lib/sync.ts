@@ -170,7 +170,7 @@ async function replayOne(
   // the ledger reversals; the client never writes ledger_entries directly).
   // ledger_edits: route to the edit_ledger_entry RPC (it owns the running-
   // balance recompute on the server).
-  if (table === 'invoice_voids' || table === 'receipt_voids' || table === 'ledger_edits') {
+  if (table === 'invoice_voids' || table === 'receipt_voids' || table === 'purchase_voids' || table === 'ledger_edits') {
     if (table === 'ledger_edits') {
       const p = entry.payload as {
         entryId?: string;
@@ -222,12 +222,21 @@ async function replayOne(
       if (error) throw error;
       return true;
     }
-    const p = entry.payload as { invoiceId?: string; receiptId?: string; reason?: string };
+    const p = entry.payload as { invoiceId?: string; receiptId?: string; purchaseId?: string; reason?: string };
     const reason = typeof p.reason === 'string' && p.reason ? p.reason : 'Voided by user';
     if (table === 'invoice_voids') {
       if (!p.invoiceId) return true;
       const { error } = await db.rpc('void_invoice', {
         p_invoice_id: p.invoiceId,
+        p_reason: reason,
+      });
+      if (error) throw error;
+      return true;
+    }
+    if (table === 'purchase_voids') {
+      if (!p.purchaseId) return true;
+      const { error } = await db.rpc('void_purchase', {
+        p_purchase_id: p.purchaseId,
         p_reason: reason,
       });
       if (error) throw error;

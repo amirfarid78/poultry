@@ -11,7 +11,7 @@ import {
   DEFAULT_LEDGER_FILTER,
   filterLedgerEntries,
 } from '../ledger/ledgerFilter';
-import { Building2, Plus, Printer, UserPlus, Edit3, X, Pencil } from 'lucide-react';
+import { Building2, Plus, Printer, UserPlus, Edit3, X, Pencil, Trash2 } from 'lucide-react';
 
 interface SupplierViewProps {
   parties: Party[];
@@ -21,6 +21,7 @@ interface SupplierViewProps {
   language: 'en' | 'ur';
   todayMandiRate?: number;
   onAddPurchase: (purchase: Purchase) => void;
+  onDeletePurchase?: (purchaseId: string) => boolean | void;
   onOpenReceiptModal: (partyId?: string) => void;
   onAddParty?: (party: Party) => void;
   onUpdateParty?: (party: Party) => void;
@@ -36,6 +37,7 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
   language,
   todayMandiRate,
   onAddPurchase,
+  onDeletePurchase,
   onOpenReceiptModal,
   onAddParty,
   onUpdateParty,
@@ -48,6 +50,9 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
     new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const suppliers = parties.filter((p) => p.partyType === 'supplier');
   const canEditLedger = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
+  // Purchase voids use the same roles as the void_purchase() RPC.
+  const canDeletePurchase = currentRole === 'owner' || currentRole === 'manager' || currentRole === 'accountant';
+  const showActions = (canEditLedger && onEditLedgerEntry) || (canDeletePurchase && onDeletePurchase);
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>(suppliers[0]?.id || '');
   const [filter, setFilter] = useState<LedgerFilterState>(DEFAULT_LEDGER_FILTER);
   const [editingEntry, setEditingEntry] = useState<LedgerEntry | null>(null);
@@ -291,15 +296,15 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
                 <th className="p-3 border-b text-right text-rose-700">{isUrdu ? 'خریداری مال (Debit)' : 'Purchase (Debit)'}</th>
                 <th className="p-3 border-b text-right text-emerald-700">{isUrdu ? 'ادائیگی رقم (Credit)' : 'Paid (Credit)'}</th>
                 <th className="p-3 border-b text-right">{isUrdu ? 'بقایا واجب الادا' : 'Running Balance'}</th>
-                {canEditLedger && onEditLedgerEntry && (
-                  <th className="p-3 border-b text-center no-print">{isUrdu ? 'ترمیم' : 'Edit'}</th>
+                {showActions && (
+                  <th className="p-3 border-b text-center no-print">{isUrdu ? 'ترمیم / حذف' : 'Edit / Delete'}</th>
                 )}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {supplierEntries.length === 0 ? (
                 <tr>
-                  <td colSpan={canEditLedger && onEditLedgerEntry ? 8 : 7} className="p-6 text-center text-slate-400">
+                  <td colSpan={showActions ? 8 : 7} className="p-6 text-center text-slate-400">
                     {isUrdu ? 'اس سپلائر کی کوئی پرانی انٹری موجود نہیں ہے' : 'No recorded transactions yet for this supplier.'}
                   </td>
                 </tr>
@@ -328,17 +333,31 @@ export const SupplierView: React.FC<SupplierViewProps> = ({
                     <td className="p-3 text-right font-mono font-extrabold text-slate-900">
                       Rs {e.runningBalance.toLocaleString()}
                     </td>
-                    {canEditLedger && onEditLedgerEntry && (
+                    {showActions && (
                       <td className="p-3 text-center no-print">
                         {!e.isVoid && (
-                          <button
-                            type="button"
-                            onClick={() => setEditingEntry(e)}
-                            className="p-1.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 transition"
-                            title={isUrdu ? 'انٹری میں ترمیم' : 'Edit entry'}
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                          </button>
+                          <span className="inline-flex items-center gap-1">
+                            {canEditLedger && onEditLedgerEntry && (
+                              <button
+                                type="button"
+                                onClick={() => setEditingEntry(e)}
+                                className="p-1.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 transition"
+                                title={isUrdu ? 'انٹری میں ترمیم' : 'Edit entry'}
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {canDeletePurchase && onDeletePurchase && e.refType === 'purchase' && e.refId && (
+                              <button
+                                type="button"
+                                onClick={() => onDeletePurchase(e.refId!)}
+                                className="p-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 transition"
+                                title={isUrdu ? 'خریداری حذف کریں' : 'Delete purchase'}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </span>
                         )}
                       </td>
                     )}

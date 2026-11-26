@@ -884,6 +884,88 @@ function AppShell() {
     };
   };
 
+  // reversePurchaseForVoid: mirror of reverseInvoiceForVoid for a supplier
+  // purchase — marks the purchase void, posts a local reversal row for its
+  // trigger-posted ledger row, takes the supplier balance back down by
+  // (total − paid), returns the paid cash to the safe and takes the stock
+  // back out of BR-LIVE. The server void_purchase() does the same on its
+  // side; the audit trail stays intact (nothing hard-deleted).
+  const reversePurchaseForVoid = (prev: AppState, purchase: Purchase, reason: string): AppState => {
+    if (purchase.isVoid) return prev;
+    const now = new Date().toISOString();
+    const todayStr = todayPKT();
+
+    const party = prev.parties.find((p) => p.id === purchase.supplierId);
+    const curBal = party?.currentBalance ?? purchase.newBalance;
+
+    // Reverse the posted (non-void) purchase ledger row, newest first —
+    // mirroring the server void_purchase(). There is exactly one such row
+    // (debit = total, credit = paid), but walk the set generically.
+    const posted = prev.ledgerEntries
+      .filter((e) => e.refId === purchase.id && e.refType === 'purchase' && !e.isVoid)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+
+    let bal = curBal;
+    const reversals: LedgerEntry[] = posted.map((row, i) => {
+      bal = Math.round(bal - (row.debit || 0) + (row.credit || 0));
+      return {
+        id: `led-void-pur-${Date.now()}-${i}`,
+        partyId: row.partyId,
+        partyType: row.partyType,
+        entryDate: todayStr,
+        detail: `VOID reversal (${reason}): ${row.detail}`,
+        detailUrdu: `وائڈ واپسی (${reason}): ${row.detailUrdu || row.detail}`,
+        folioNo: row.folioNo,
+        debit: row.credit || 0,
+        credit: row.debit || 0,
+        runningBalance: bal,
+        refType: row.refType,
+        refId: purchase.id,
+        createdAt: now,
+      };
+    });
+    const newBal = bal;
+
+    const voidedIds = new Set(posted.map((r) => r.id));
+    const ledgerEntries = [
+      ...prev.ledgerEntries.map((e) => (voidedIds.has(e.id) ? { ...e, isVoid: true } : e)),
+      ...reversals,
+    ];
+
+    const updatedParties = prev.parties.map((p) =>
+      p.id === purchase.supplierId ? { ...p, currentBalance: newBal } : p
+    );
+
+    // The purchase took paidCash out of the safe; the void returns it.
+    const updatedDayClosing: DayClosing = {
+      ...prev.dayClosing,
+      systemCash: prev.dayClosing.systemCash + (purchase.paidCash || 0),
+      physicalCash: prev.dayClosing.physicalCash + (purchase.paidCash || 0),
+    };
+
+    const updatedInventory = prev.inventory.map((inv) => {
+      if (inv.category === 'broiler' && (inv.id === 'inv-item-1' || inv.code === 'BR-LIVE')) {
+        return {
+          ...inv,
+          currentWeightKg: Math.max(0, inv.currentWeightKg - purchase.netWeightKg),
+          currentCount: Math.max(0, (inv.currentCount || 0) - (purchase.birdCount || Math.round(purchase.netWeightKg / 2))),
+        };
+      }
+      return inv;
+    });
+
+    return {
+      ...prev,
+      parties: updatedParties,
+      purchases: prev.purchases.map((p) =>
+        p.id === purchase.id ? { ...p, isVoid: true, voidReason: reason } : p
+      ),
+      ledgerEntries,
+      dayClosing: updatedDayClosing,
+      inventory: updatedInventory,
+    };
+  };
+
   // P0-5: persist the BR-LIVE stock movement server-side even when local
   // inventory is empty (fresh/blank device). Base on the synchronously
   // maintained broiler ref (P1-31: rapid saves build on each other, not on
@@ -1266,6 +1348,39 @@ function AppShell() {
       purchase.netWeightKg,
       purchase.birdCount || Math.round(purchase.netWeightKg / 2)
     );
+  };
+
+  // 3. DELETE (VOID) A SUPPLIER PURCHASE — mirrors handleDeleteInvoice:
+  // posts a reversal row, restores the supplier balance and the paid cash,
+  // takes the stock back out, and marks the purchase void (never
+  // hard-deleted, so the audit trail stays intact). The server side is the
+  // void_purchase() RPC (migration 20261126000002). Single confirm dialog
+  // is the only gate — same as the party cascade delete.
+  const handleDeletePurchase = (purchaseId: string, reason?: string): boolean => {
+    const s = stateRef.current;
+    const purchase = s.purchases.find((p) => p.id === purchaseId);
+    if (!purchase || purchase.isVoid) return false;
+    const supplier = s.parties.find((p) => p.id === purchase.supplierId);
+    const label = supplier?.urduName || supplier?.name || purchase.supplierName;
+    const confirmText =
+      s.language === 'ur'
+        ? `”${label}“ کی خریداری ${purchase.purchaseNumber} (${purchase.netWeightKg} کلو، Rs ${purchase.totalAmount.toLocaleString()}) وائڈ (حذف) ہو جائے گی — اسٹاک کم ہوگا، بقایا واپس ہوگا اور ادا شدہ نقد واپس آئے گا۔ یہ واپس نہیں ہوگا۔ جاری رکھیں؟`
+        : `This will void purchase ${purchase.purchaseNumber} from ${label} (${purchase.netWeightKg} kg, Rs ${purchase.totalAmount.toLocaleString()}) — stock will reduce, the balance will reverse and the paid cash will return. This cannot be undone. Continue?`;
+    if (!window.confirm(confirmText)) return false;
+    const voidReason = reason || (s.language === 'ur' ? 'صارف نے حذف کیا' : 'Deleted by user');
+    const { accounts, touched } = applyAccountEffectsTo(
+      s.accounts,
+      reverseAccountEffects(purchaseAccountEffects(purchase))
+    );
+    setAppState((prev) => ({ ...reversePurchaseForVoid(prev, purchase, voidReason), accounts }));
+    // Void FIRST so the outbox replays it before anything that follows.
+    void persist('insert', 'purchase_voids', { id: purchaseId, purchaseId, reason: voidReason, partyId: purchase.supplierId });
+    for (const a of touched) void persist('upsert', 'chart_of_accounts', a);
+    void persistStockDelta(
+      -purchase.netWeightKg,
+      -(purchase.birdCount || Math.round(purchase.netWeightKg / 2))
+    );
+    return true;
   };
 
   // 3.5. EXPENSES HANDLERS
@@ -2036,6 +2151,7 @@ function AppShell() {
             language={appState.language}
             todayMandiRate={appState.todayMandiRate}
             onAddPurchase={handleAddPurchase}
+            onDeletePurchase={handleDeletePurchase}
             onOpenReceiptModal={(partyId) => {
               setReceiptPreselectedPartyId(partyId);
               setIsReceiptModalOpen(true);

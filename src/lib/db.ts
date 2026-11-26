@@ -252,6 +252,8 @@ function mapPurchase(r: Row): Purchase {
     previousBalance: num(r.previous_balance),
     newBalance: num(r.new_balance),
     createdAt: iso(r.created_at),
+    isVoid: r.is_void === true,
+    voidReason: optStr(r.void_reason),
   };
 }
 
@@ -960,6 +962,7 @@ export type OutboxTable =
   | 'chart_of_accounts'
   | 'invoice_voids'
   | 'receipt_voids'
+  | 'purchase_voids'
   | 'ledger_edits'
   | 'party_deletes';
 

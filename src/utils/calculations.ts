@@ -427,7 +427,7 @@ export function computeFifoProfit(
     ratePer40kg: number;
   }
   const lots: Lot[] = (purchases ?? [])
-    .filter((p) => (p.netWeightKg || 0) > 0)
+    .filter((p) => !p.isVoid && (p.netWeightKg || 0) > 0)
     .map((p) => ({
       date: p.purchaseDate || '',
       createdAt: p.createdAt || '',

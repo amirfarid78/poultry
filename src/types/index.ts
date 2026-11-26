@@ -175,6 +175,8 @@ export interface Purchase {
   previousBalance: number;
   newBalance: number;
   createdAt: string;
+  isVoid?: boolean;
+  voidReason?: string;
 }
 
 export interface OrderItem {
