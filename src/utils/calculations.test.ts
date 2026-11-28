@@ -149,5 +149,65 @@ export function runAcceptanceTests() {
     });
   }
 
+  // Test 10: Flat discount — 160kg @ 17400, charges 1100, discount 2000
+  {
+    const t = calculateInvoice({
+      mandiRate: 17400,
+      saleRate: 17400,
+      weightKg: 160,
+      previousBalance: 2950,
+      receivedCash: 0,
+      receivedAC: 0,
+      chargesTotal: 1100,
+      discountAmount: 2000
+    });
+
+    const passed = t.birdTotal === 69600 && t.totalAmount === 68700 && t.newBalance === 71650 && t.discountAmount === 2000;
+    results.push({
+      testName: 'Flat discount: 160kg @ 17400 + charges 1100 - discount 2000',
+      passed,
+      details: `Expected bird 69600, total 68700, bal 71650 -> Got bird ${t.birdTotal}, total ${t.totalAmount}, bal ${t.newBalance}, discount ${t.discountAmount}`
+    });
+  }
+
+  // Test 11: Discount can never exceed the bill — clamped to the total
+  {
+    const t = calculateInvoice({
+      mandiRate: 12000,
+      saleRate: 12200,
+      weightKg: 80,
+      previousBalance: 0,
+      receivedCash: 0,
+      receivedAC: 0,
+      discountAmount: 100000
+    });
+
+    const passed = t.birdTotal === 24400 && t.discountAmount === 24400 && t.totalAmount === 0;
+    results.push({
+      testName: 'Discount clamp: discount 100000 on a 24400 bill -> total 0',
+      passed,
+      details: `Expected discount 24400, total 0 -> Got discount ${t.discountAmount}, total ${t.totalAmount}`
+    });
+  }
+
+  // Test 12: No discount — totals unchanged (regression guard)
+  {
+    const t = calculateInvoice({
+      mandiRate: 12000,
+      saleRate: 12200,
+      weightKg: 80,
+      previousBalance: 0,
+      receivedCash: 20000,
+      receivedAC: 0
+    });
+
+    const passed = t.totalAmount === 24400 && t.newBalance === 4400 && t.discountAmount === 0;
+    results.push({
+      testName: 'No discount: 80kg @ 12200, Recd 20000 (unchanged)',
+      passed,
+      details: `Expected Total 24400 & Bal 4400 -> Got Total ${t.totalAmount} & Bal ${t.newBalance}`
+    });
+  }
+
   return results;
 }

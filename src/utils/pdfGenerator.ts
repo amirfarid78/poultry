@@ -188,7 +188,8 @@ export function generateInvoicePDF(invoice: Invoice, branding?: PdfBranding): js
   doc.setFontSize(8.5);
   doc.setTextColor(15, 23, 42);
   const invCharges = (invoice.charges ?? []).filter((c) => (c.amount || 0) > 0);
-  const birdTotal = invoice.totalAmount - invCharges.reduce((s, c) => s + c.amount, 0);
+  // Gross bird value: total is already net of discount, so add it back.
+  const birdTotal = invoice.totalAmount - invCharges.reduce((s, c) => s + c.amount, 0) + (invoice.discountAmount || 0);
   doc.text(`Broiler Live Chicken (${invoice.birdCount || 40} birds)`, 14, y + 18);
   doc.text(`${invoice.netWeightKg} kg`, 65, y + 18, { align: 'right' });
   doc.text(`Rs ${invoice.saleRatePer40kg.toLocaleString()}`, 95, y + 18, { align: 'right' });
@@ -204,6 +205,16 @@ export function generateInvoicePDF(invoice: Invoice, branding?: PdfBranding): js
     doc.text(`${c.name} (Extra charge)`, 14, chargeY);
     doc.setFont('helvetica', 'bold');
     doc.text(`Rs ${c.amount.toLocaleString()}`, pageWidth - 14, chargeY, { align: 'right' });
+  }
+
+  if ((invoice.discountAmount || 0) > 0) {
+    chargeY += 6;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(159, 18, 57);
+    doc.text('Discount / رعایت (Flat)', 14, chargeY);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`-Rs ${(invoice.discountAmount || 0).toLocaleString()}`, pageWidth - 14, chargeY, { align: 'right' });
   }
 
   doc.line(10, chargeY + 4, pageWidth - 10, chargeY + 4);

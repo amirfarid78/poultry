@@ -15,13 +15,15 @@ export interface InvoiceCalcInput {
   receivedCash: number;
   receivedAC: number;
   chargesTotal?: number; // Extra charges (labour, loading, custom) added to the bill
+  discountAmount?: number; // Flat discount in Rs, subtracted from the bill
 }
 
 export interface InvoiceCalcResult {
   netWeightKg: number;
   birdTotal: number; // Sale value of the birds only
   chargesTotal: number;
-  totalAmount: number; // birdTotal + chargesTotal
+  discountAmount: number; // Flat discount actually applied (clamped to the bill)
+  totalAmount: number; // birdTotal + chargesTotal - discountAmount
   totalReceived: number;
   marginPer40kg: number;
   netMarginTotal: number;
@@ -40,7 +42,12 @@ export function calculateInvoice(input: InvoiceCalcInput): InvoiceCalcResult {
   // Bird total = (Rate * Kilo) / 40 rounded to nearest Rupee
   const birdTotal = Math.round((input.saleRate * netWeightKg) / divisor);
   const chargesTotal = Math.max(0, Math.round(input.chargesTotal || 0));
-  const totalAmount = birdTotal + chargesTotal;
+  // Flat discount: never negative, never more than the bill itself.
+  const discountAmount = Math.min(
+    Math.max(0, Math.round(input.discountAmount || 0)),
+    birdTotal + chargesTotal
+  );
+  const totalAmount = birdTotal + chargesTotal - discountAmount;
   
   const totalReceived = Math.round((input.receivedCash || 0) + (input.receivedAC || 0));
   
@@ -54,6 +61,7 @@ export function calculateInvoice(input: InvoiceCalcInput): InvoiceCalcResult {
     netWeightKg,
     birdTotal,
     chargesTotal,
+    discountAmount,
     totalAmount,
     totalReceived,
     marginPer40kg,
@@ -231,12 +239,15 @@ export function generateInvoiceWhatsAppUrl(data: {
   shareUrl?: string;
   lang?: 'en' | 'ur';
   charges?: Array<{ name: string; amount: number }>;
+  discountAmount?: number;
 }): string {
   const normPhone = normalizePakistanPhone(data.phone);
   const bizName = data.businessName || 'نواز پولٹری (Nawaz Poultry)';
   const totRec = data.receivedCash + data.receivedAC;
   const charges = (data.charges ?? []).filter((c) => (c.amount || 0) > 0);
-  const birdTotal = data.total - charges.reduce((s, c) => s + c.amount, 0);
+  const discountAmount = Math.max(0, Math.round(data.discountAmount || 0));
+  // Gross bird value: total is already net of discount, so add it back.
+  const birdTotal = data.total - charges.reduce((s, c) => s + c.amount, 0) + discountAmount;
   
   const balanceNote = data.newBalance < 0 
     ? `بقایا / پیشگی (Advance with Us): Rs ${Math.abs(data.newBalance).toLocaleString()} (Credit)`
@@ -251,8 +262,9 @@ export function generateInvoiceWhatsAppUrl(data: {
     `--------------------------------`,
     `*وزن / Weight:* ${data.kilo} kg`,
     `*ریٹ فی 40 کلو / Rate:* Rs ${data.saleRate.toLocaleString()}/40kg`,
-    charges.length > 0 ? `*مرغی کی رقم / Birds Total:* Rs ${birdTotal.toLocaleString()}` : null,
+    charges.length > 0 || discountAmount > 0 ? `*مرغی کی رقم / Birds Total:* Rs ${birdTotal.toLocaleString()}` : null,
     ...charges.map((c) => `*${c.name}:* Rs ${c.amount.toLocaleString()}`),
+    discountAmount > 0 ? `*رعایت / Discount:* -Rs ${discountAmount.toLocaleString()}` : null,
     `*کل رقم / Total Bill:* Rs ${data.total.toLocaleString()}`,
     `--------------------------------`,
     `*نقد وصولی / Cash Received:* Rs ${data.receivedCash.toLocaleString()}`,

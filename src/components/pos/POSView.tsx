@@ -124,6 +124,8 @@ export const POSView: React.FC<POSViewProps> = ({
   const [notes, setNotes] = useState<string>('');
   // Extra charges on this invoice: labour, loading, transport, or manually named.
   const [charges, setCharges] = useState<InvoiceCharge[]>([]);
+  // Flat discount (Rs) on this invoice — typed by the user, never a %.
+  const [discountAmount, setDiscountAmount] = useState<number>(0);
   // The invoice just saved — shown in the success popup (Preview / Print)
   // until the user dismisses it, so the next sale can never start on the
   // previous sale's data. Replaces the old 5-second banner nobody saw.
@@ -131,6 +133,12 @@ export const POSView: React.FC<POSViewProps> = ({
   const [isAddPartyModalOpen, setIsAddPartyModalOpen] = useState(false);
   // Sale being edited (void + reissue flow). Null = creating a new sale.
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
+
+  // True once the user has typed/picked a sale rate by hand (typed value,
+  // margin button, loaded invoice, order quote). While false, the sale rate
+  // follows todayMandiRate + 200; once true, no background refresh may ever
+  // overwrite it — this is the scroll/reset fix.
+  const saleRateEditedRef = useRef(false);
 
   const chargesTotal = charges.reduce((s, c) => s + (c.amount || 0), 0);
 
@@ -160,6 +168,7 @@ export const POSView: React.FC<POSViewProps> = ({
     setInvoiceDate(new Date().toISOString().split('T')[0]);
     setMandiRate(todayMandiRate ?? 0);
     setSaleRate(todayMandiRate > 0 ? todayMandiRate + 200 : 0);
+    saleRateEditedRef.current = false;
     setWeightKg(0);
     setShrinkageKg(0);
     setBirdCount(0);
@@ -168,6 +177,7 @@ export const POSView: React.FC<POSViewProps> = ({
     setAcRefNo('');
     setNotes('');
     setCharges([]);
+    setDiscountAmount(0);
     setEditingInvoice(null);
   };
 
@@ -193,6 +203,9 @@ export const POSView: React.FC<POSViewProps> = ({
         amount: c.amount,
       }))
     );
+    setDiscountAmount(inv.discountAmount || 0);
+    // The loaded invoice's own rate is deliberate — never auto-overwrite it.
+    saleRateEditedRef.current = true;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -201,25 +214,40 @@ export const POSView: React.FC<POSViewProps> = ({
     if (prefillOrder) {
       if (prefillOrder.customerId) setSelectedCustomerId(prefillOrder.customerId);
       if (prefillOrder.expectedKg) handleWeightChange(prefillOrder.expectedKg);
-      if (prefillOrder.quotedRatePer40kg) setSaleRate(prefillOrder.quotedRatePer40kg);
+      if (prefillOrder.quotedRatePer40kg) {
+        setSaleRate(prefillOrder.quotedRatePer40kg);
+        // The quoted rate is deliberate — never auto-overwrite it.
+        saleRateEditedRef.current = true;
+      }
       if (prefillOrder.assignedVehicleId) setSelectedVehicleId(prefillOrder.assignedVehicleId);
       if (prefillOrder.expectedBirdCount) setBirdCount(prefillOrder.expectedBirdCount);
       setNotes(`Converted from Order #${prefillOrder.orderNumber} - Route: ${prefillOrder.deliveryRoute || '-'}`);
     }
   }, [prefillOrder]);
 
-  // P1-10: resync form when props change. Rates follow todayMandiRate only
-  // while the user has not manually edited them (tracked via the last
-  // applied rate ref); customer/vehicle fall back to the first available
-  // when the selected id no longer exists.
+  // Rates follow todayMandiRate only while the user has not manually edited
+  // them. The old code re-applied mandi+200 on EVERY parties/vehicles change
+  // (i.e. on every background sync refresh) whenever the mandi rate itself
+  // was untouched — so a hand-typed sale rate was silently reset. Two guards
+  // now: this effect only runs on todayMandiRate itself, and it never touches
+  // a sale rate the user typed or picked (saleRateEditedRef).
   const lastAppliedRateRef = useRef<number>(todayMandiRate ?? 0);
   useEffect(() => {
     const newRate = todayMandiRate ?? 0;
     if (mandiRate === lastAppliedRateRef.current) {
       setMandiRate(newRate);
-      setSaleRate(newRate > 0 ? newRate + 200 : 0);
+      if (!saleRateEditedRef.current) {
+        setSaleRate(newRate > 0 ? newRate + 200 : 0);
+      }
     }
     lastAppliedRateRef.current = newRate;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayMandiRate]);
+
+  // Customer/vehicle fall back only when the selected id no longer exists
+  // (e.g. the party was deleted) — kept separate so a sync refresh can
+  // never touch the rates above.
+  useEffect(() => {
     if (selectedCustomerId && !customers.some((c) => c.id === selectedCustomerId)) {
       setSelectedCustomerId(customers[0]?.id || '');
     }
@@ -227,7 +255,7 @@ export const POSView: React.FC<POSViewProps> = ({
       setSelectedVehicleId(vehicles[0]?.id || '');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [todayMandiRate, parties, vehicles]);
+  }, [parties, vehicles]);
 
   // Voice Input & Speech Dictation State
   const [isListening, setIsListening] = useState(false);
@@ -256,6 +284,7 @@ export const POSView: React.FC<POSViewProps> = ({
     receivedCash: useRef<HTMLInputElement>(null),
     receivedAC: useRef<HTMLInputElement>(null),
     acRefNo: useRef<HTMLInputElement>(null),
+    discount: useRef<HTMLInputElement>(null),
   };
 
   // No fallback to customers[0]: a blank selection must mean "no customer"
@@ -270,13 +299,12 @@ export const POSView: React.FC<POSViewProps> = ({
     setBirdCount(deriveBirdCount(kg));
   };
 
-  // Update default lot weight when customer changes
+  // Customer select no longer fills the weight: the weight must start at 0
+  // so the user types it every time (the old defaultKilo auto-fill silently
+  // carried the previous lot size into the next bill). The quick-lot buttons
+  // below still offer one-tap weights.
   const handleCustomerChange = (customerId: string) => {
     setSelectedCustomerId(customerId);
-    const cust = parties.find((p) => p.id === customerId);
-    if (cust && cust.defaultKilo) {
-      handleWeightChange(cust.defaultKilo);
-    }
   };
 
   // Calculation Engine
@@ -289,7 +317,8 @@ export const POSView: React.FC<POSViewProps> = ({
     previousBalance: selectedCustomer?.currentBalance || 0,
     receivedCash,
     receivedAC,
-    chargesTotal
+    chargesTotal,
+    discountAmount
   });
   const stockExceeded = availableStockKg !== null && calc.netWeightKg > availableStockKg;
   const creditLimit = selectedCustomer?.creditLimit || 0;
@@ -490,9 +519,10 @@ export const POSView: React.FC<POSViewProps> = ({
       netWeightKg: calc.netWeightKg,
       birdCount,
       mannDivisor: 40,
-      totalAmount: calc.birdTotal + cleanChargesTotal,
+      totalAmount: calc.totalAmount,
       charges: cleanCharges,
       chargesTotal: cleanChargesTotal,
+      discountAmount: calc.discountAmount,
       receivedCash,
       receivedAC,
       acPaymentMode,
@@ -600,7 +630,8 @@ export const POSView: React.FC<POSViewProps> = ({
         shareUrl,
         lang: language,
         businessName: `${biz.nameUr} (${biz.nameEn})`,
-        charges: newInvoice.charges
+        charges: newInvoice.charges,
+        discountAmount: calc.discountAmount
       });
       window.open(waUrl, '_blank');
     }
@@ -633,7 +664,9 @@ export const POSView: React.FC<POSViewProps> = ({
       ? `پیشگی جمع (Advance with Us): Rs ${Math.abs(inv.newBalance).toLocaleString()}`
       : `بقایا واجب الادا (Net Balance Payable): Rs ${inv.newBalance.toLocaleString()}`;
     const invCharges = (inv.charges ?? []).filter((c) => (c.amount || 0) > 0);
-    const birdTotal = inv.totalAmount - invCharges.reduce((s, c) => s + c.amount, 0);
+    const discountAmount = inv.discountAmount || 0;
+    // Gross bird value: total is already net of discount, so add it back.
+    const birdTotal = inv.totalAmount - invCharges.reduce((s, c) => s + c.amount, 0) + discountAmount;
 
     const text = [
       `*${biz.nameUr} - بل انوائس*`,
@@ -644,8 +677,9 @@ export const POSView: React.FC<POSViewProps> = ({
       `--------------------------------`,
       `*وزن / Weight:* ${inv.netWeightKg} kg (${inv.birdCount} birds)`,
       `*ریٹ فی من / Rate:* Rs ${inv.saleRatePer40kg.toLocaleString()}/40kg`,
-      invCharges.length > 0 ? `*مرغی کی رقم / Birds:* Rs ${birdTotal.toLocaleString()}` : null,
+      invCharges.length > 0 || discountAmount > 0 ? `*مرغی کی رقم / Birds:* Rs ${birdTotal.toLocaleString()}` : null,
       ...invCharges.map((c) => `*${c.name}:* Rs ${c.amount.toLocaleString()}`),
+      discountAmount > 0 ? `*رعایت / Discount:* -Rs ${discountAmount.toLocaleString()}` : null,
       `*کل رقم / Total:* Rs ${inv.totalAmount.toLocaleString()}`,
       `--------------------------------`,
       `*نقد وصولی / Wasool:* Rs ${inv.receivedCash.toLocaleString()}`,
@@ -712,7 +746,8 @@ export const POSView: React.FC<POSViewProps> = ({
       shareUrl,
       lang: language,
       businessName: `${biz.nameUr} (${biz.nameEn})`,
-      charges: inv.charges ?? []
+      charges: inv.charges ?? [],
+      discountAmount: inv.discountAmount || 0
     });
     window.open(waUrl, '_blank');
   };
@@ -1056,6 +1091,7 @@ export const POSView: React.FC<POSViewProps> = ({
                   type="number"
                   value={mandiRate || ''}
                   onChange={(e) => setMandiRate(parseFloat(e.target.value) || 0)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-sm font-bold text-slate-900 font-mono focus:ring-2 focus:ring-emerald-500"
                   placeholder="12000"
                 />
@@ -1087,7 +1123,8 @@ export const POSView: React.FC<POSViewProps> = ({
                   ref={inputRefs.saleRate}
                   type="number"
                   value={saleRate || ''}
-                  onChange={(e) => setSaleRate(parseFloat(e.target.value) || 0)}
+                  onChange={(e) => { saleRateEditedRef.current = true; setSaleRate(parseFloat(e.target.value) || 0); }}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 text-sm font-bold text-slate-900 font-mono focus:ring-2 focus:ring-emerald-500"
                   placeholder="12200"
                 />
@@ -1099,7 +1136,7 @@ export const POSView: React.FC<POSViewProps> = ({
                   <button
                     key={margin}
                     type="button"
-                    onClick={() => setSaleRate(mandiRate + margin)}
+                    onClick={() => { saleRateEditedRef.current = true; setSaleRate(mandiRate + margin); }}
                     className="text-[10px] px-2 py-0.5 rounded bg-white hover:bg-emerald-50 border border-slate-200 text-slate-600 hover:text-emerald-700 font-mono font-medium"
                   >
                     +{margin}
@@ -1170,6 +1207,7 @@ export const POSView: React.FC<POSViewProps> = ({
                   step="0.5"
                   value={weightKg || ''}
                   onChange={(e) => handleWeightChange(parseFloat(e.target.value) || 0)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 text-base font-black text-slate-900 font-mono focus:ring-2 focus:ring-emerald-500"
                   placeholder="0"
                 />
@@ -1181,6 +1219,7 @@ export const POSView: React.FC<POSViewProps> = ({
                   type="number"
                   value={birdCount || ''}
                   onChange={(e) => setBirdCount(parseInt(e.target.value) || 0)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-800 font-mono"
                   placeholder={isUrdu ? 'تعداد پرندے (40)' : 'Birds Count (40)'}
                 />
@@ -1234,6 +1273,7 @@ export const POSView: React.FC<POSViewProps> = ({
                   type="number"
                   value={receivedCash || ''}
                   onChange={(e) => setReceivedCash(parseFloat(e.target.value) || 0)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-emerald-300 text-base font-black text-emerald-900 font-mono focus:ring-2 focus:ring-emerald-500 bg-white"
                   placeholder="20000"
                 />
@@ -1296,6 +1336,7 @@ export const POSView: React.FC<POSViewProps> = ({
                   type="number"
                   value={receivedAC || ''}
                   onChange={(e) => setReceivedAC(parseFloat(e.target.value) || 0)}
+                  onWheel={(e) => e.currentTarget.blur()}
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-blue-300 text-base font-black text-blue-900 font-mono focus:ring-2 focus:ring-emerald-500 bg-white"
                   placeholder="0"
                 />
@@ -1353,6 +1394,7 @@ export const POSView: React.FC<POSViewProps> = ({
                     type="number"
                     value={c.amount || ''}
                     onChange={(e) => updateCharge(c.id, { amount: parseFloat(e.target.value) || 0 })}
+                    onWheel={(e) => e.currentTarget.blur()}
                     placeholder="0"
                     className="w-full pl-8 pr-2 py-1.5 rounded-xl border border-amber-300 text-xs font-bold text-slate-900 font-mono bg-white focus:ring-2 focus:ring-amber-400"
                   />
@@ -1392,6 +1434,35 @@ export const POSView: React.FC<POSViewProps> = ({
               {isUrdu
                 ? 'یہ رقم بل کے کل میں جمع ہوگی اور کھاتے میں الگ انٹری کے طور پر ریکارڈ ہوگی۔'
                 : 'Added to the bill total and recorded as separate ledger entries.'}
+            </p>
+          </div>
+
+          {/* Row 4c: Flat Discount (Rs) — subtracted from the bill total */}
+          <div className="p-3.5 rounded-xl bg-rose-50/60 border border-rose-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-bold text-slate-800">
+                {isUrdu ? 'رعایت / ڈسکاؤنٹ (فلیٹ روپے):' : 'Discount (Flat Rs):'}
+              </label>
+              <span className="text-[11px] font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded font-mono">
+                − Rs {discountAmount.toLocaleString()}
+              </span>
+            </div>
+            <div className="relative">
+              <span className="absolute left-3 top-2 text-slate-400 text-xs font-bold">Rs</span>
+              <input
+                ref={inputRefs.discount}
+                type="number"
+                value={discountAmount || ''}
+                onChange={(e) => setDiscountAmount(Math.max(0, parseFloat(e.target.value) || 0))}
+                onWheel={(e) => e.currentTarget.blur()}
+                className="w-full pl-9 pr-3 py-2 rounded-xl border border-rose-300 text-base font-black text-rose-900 font-mono focus:ring-2 focus:ring-rose-500 bg-white"
+                placeholder="0"
+              />
+            </div>
+            <p className="text-[10px] text-slate-500">
+              {isUrdu
+                ? 'یہ رقم کل بل سے کم ہوگی اور کھاتے کے بقایا میں بھی کم آئے گی۔'
+                : 'Subtracted from the bill total and from the running balance.'}
             </p>
           </div>
 
@@ -1489,6 +1560,13 @@ export const POSView: React.FC<POSViewProps> = ({
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {discountAmount > 0 && (
+                <div className="flex justify-between py-1.5">
+                  <span className="text-rose-300">{isUrdu ? 'رعایت / ڈسکاؤنٹ:' : 'Discount:'}</span>
+                  <span className="font-mono text-rose-300">− Rs {discountAmount.toLocaleString()}</span>
                 </div>
               )}
 
@@ -1826,7 +1904,7 @@ export const POSView: React.FC<POSViewProps> = ({
                       </div>
                       <div className="text-right">
                         <div className="font-bold">{printModalInvoice.netWeightKg} kg</div>
-                        <div className="font-bold">Rs {(printModalInvoice.totalAmount - (printModalInvoice.chargesTotal || 0)).toLocaleString()}</div>
+                        <div className="font-bold">Rs {(printModalInvoice.totalAmount - (printModalInvoice.chargesTotal || 0) + (printModalInvoice.discountAmount || 0)).toLocaleString()}</div>
                       </div>
                     </div>
                     {(printModalInvoice.charges ?? []).map((c) => (
@@ -1840,6 +1918,17 @@ export const POSView: React.FC<POSViewProps> = ({
                         </div>
                       </div>
                     ))}
+                    {(printModalInvoice.discountAmount || 0) > 0 && (
+                      <div className="flex justify-between mt-1">
+                        <div>
+                          <div>Discount (رعایت)</div>
+                          <div className="text-[10px] text-slate-600">{isUrdu ? 'فلیٹ رعایت' : 'Flat discount'}</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-bold">-Rs {(printModalInvoice.discountAmount || 0).toLocaleString()}</div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Mathematical Balance Breakdown */}
@@ -1954,7 +2043,7 @@ export const POSView: React.FC<POSViewProps> = ({
                         <td className="p-2 text-right font-mono font-bold">{printModalInvoice.netWeightKg} kg</td>
                         <td className="p-2 text-right font-mono">Rs {printModalInvoice.saleRatePer40kg.toLocaleString()}</td>
                         <td className="p-2 text-right font-mono font-bold text-emerald-800">
-                          Rs {(printModalInvoice.totalAmount - (printModalInvoice.chargesTotal || 0)).toLocaleString()}
+                          Rs {(printModalInvoice.totalAmount - (printModalInvoice.chargesTotal || 0) + (printModalInvoice.discountAmount || 0)).toLocaleString()}
                         </td>
                       </tr>
                       {(printModalInvoice.charges ?? []).map((c) => (
@@ -1968,6 +2057,17 @@ export const POSView: React.FC<POSViewProps> = ({
                           </td>
                         </tr>
                       ))}
+                      {(printModalInvoice.discountAmount || 0) > 0 && (
+                        <tr>
+                          <td className="p-2 font-medium text-rose-900">Discount (رعایت) <span className="text-[10px] text-slate-500">(Flat discount)</span></td>
+                          <td className="p-2 text-right font-mono">-</td>
+                          <td className="p-2 text-right font-mono">-</td>
+                          <td className="p-2 text-right font-mono">-</td>
+                          <td className="p-2 text-right font-mono font-bold text-rose-800">
+                            -Rs {(printModalInvoice.discountAmount || 0).toLocaleString()}
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
 
@@ -2079,9 +2179,7 @@ export const POSView: React.FC<POSViewProps> = ({
             onAddParty(newParty);
           }
           setSelectedCustomerId(newParty.id);
-          if (newParty.defaultKilo) {
-            setWeightKg(newParty.defaultKilo);
-          }
+          // Weight stays 0 — the user types it (see handleCustomerChange).
           // The dropdown visibly switches to the new customer — that is the
           // confirmation (the old 4-second banner is gone with the invoice
           // success popup rework).

@@ -86,7 +86,7 @@ export interface LedgerEntry {
   debit: number; // Naam (Customer owes us)
   credit: number; // Jama (Customer paid us)
   runningBalance: number;
-  refType: 'invoice' | 'invoice_payment' | 'invoice_charge' | 'receipt' | 'purchase' | 'adjustment' | 'opening' | 'journal';
+  refType: 'invoice' | 'invoice_payment' | 'invoice_charge' | 'invoice_discount' | 'receipt' | 'purchase' | 'adjustment' | 'opening' | 'journal';
   refId?: string;
   mandiRate?: number; // Mandi Rate per 40kg (منڈی ریٹ)
   rate?: number; // Quoted sale rate or purchase rate per 40kg
@@ -118,7 +118,7 @@ export interface Invoice {
   netWeightKg: number;
   birdCount: number;
   mannDivisor: number; // 40
-  totalAmount: number; // round(saleRate * netWeightKg / 40) + chargesTotal
+  totalAmount: number; // round(saleRate * netWeightKg / 40) + chargesTotal - discountAmount
   charges: InvoiceCharge[]; // Extra charges: labour, loading, custom
   chargesTotal: number; // Sum of charges, included in totalAmount
   receivedCash: number;

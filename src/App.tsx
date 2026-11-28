@@ -698,7 +698,11 @@ function AppShell() {
     // right after, so the mandi-rate column stays meaningful on the sale row.
     const totRec = (invoice.receivedCash || 0) + (invoice.receivedAC || 0);
     const chargesTotal = invoice.chargesTotal || 0;
-    const birdTotal = Math.max(0, invoice.totalAmount - chargesTotal);
+    const discountAmount = invoice.discountAmount || 0;
+    // Gross bird value: total is already net of discount, so add it back —
+    // the discount gets its own credit row below (2c) instead of silently
+    // shrinking the bird row.
+    const birdTotal = Math.max(0, invoice.totalAmount - chargesTotal + discountAmount);
 
     const saleLedgerEntry: LedgerEntry = {
       id: `led-${Date.now()}-1`,
@@ -742,6 +746,27 @@ function AppShell() {
         createdAt: new Date().toISOString()
       });
     });
+
+    // 2c. One credit row for a flat discount, so the khata shows it
+    // explicitly. Chained onto the running balance like the charge rows.
+    if (discountAmount > 0) {
+      chargeRunBal = Math.round(chargeRunBal - discountAmount);
+      newLedgerEntries.push({
+        id: `led-${Date.now()}-1d`,
+        partyId: invoice.customerId,
+        partyType: 'customer',
+        entryDate: invoice.invoiceDate,
+        detail: `Discount (رعایت) on ${invoice.invoiceNumber}`,
+        detailUrdu: `رعایت: ${invoice.invoiceNumber} پر ${discountAmount.toLocaleString()} روپے`,
+        folioNo: invoice.invoiceNumber,
+        debit: 0,
+        credit: discountAmount,
+        runningBalance: chargeRunBal,
+        refType: 'invoice_discount',
+        refId: invoice.id,
+        createdAt: new Date().toISOString()
+      });
+    }
 
     // 3. Insert credit ledger entry if payment received
     if (totRec > 0) {
@@ -813,7 +838,7 @@ function AppShell() {
     const curBal = party?.currentBalance ?? invoice.newBalance;
 
     // Reverse EVERY posted (non-void) ledger row of this invoice, newest
-    // first — sale, charge and payment rows alike — mirroring the server
+    // first — sale, charge, discount and payment rows alike — mirroring the server
     // void_invoice(). The originals are marked void; the reversal rows
     // carry the correction so the audit trail stays intact.
     const posted = prev.ledgerEntries
